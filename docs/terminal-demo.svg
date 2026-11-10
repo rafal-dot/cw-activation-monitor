@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1888" height="632" viewBox="0 0 1888 632" role="img" aria-labelledby="title desc">
+<title id="title">CW Activation Monitor terminal demo</title>
+<desc id="desc">Fictional POTA, SOTA and WWFF activations with RBN receptions, distance and new-entry highlights.</desc>
+<rect width="1888" height="632" rx="10" fill="#111827"/>
+<g font-family="DejaVu Sans Mono,Consolas,monospace" font-size="14" xml:space="preserve">
+<text x="20" y="24" fill="#9ca3af">CW Activation Monitor — offline demo / fictional data</text>
+<text x="20" y="52" fill="#67e8f9" font-weight="bold">POTA/SOTA/WWFF CW → RBN | SP5GQ, SQ5J | QTH: JO91AA</text>
+<rect x="16" y="57" width="1856" height="20" fill="#fde047"/>
+<text x="20" y="72" fill="#111827" font-weight="normal">&gt;&gt;&gt; NEW ACTIVATIONS (4): IU1PZC POTA IT-0759 | Spot 14052.9 kHz | SP5GQ 18 dB; YO5BDL POTA RO-0155 | Spot 14054.0 kHz | SP5GQ 12 dB, SQ5J 9 dB; SP9DEMO/P SOTA SP/BZ-001 | Spot 7032.0 kHz | SP5GQ 14 dB; SP8DEMO/P WWFF SPFF-0001 | Spot 14044.0 kHz | SP5GQ 16 dB &lt;&lt;&lt;</text>
+<text x="20" y="92" fill="#67e8f9" font-weight="bold">ACTIVE / NEW (4)</text>
+<text x="20" y="112" fill="#f9fafb" font-weight="bold">Program │ Activator  │ Band │ Spot kHz │ RBN kHz │ Reference                                    │ Receiver   │ dB   │ WPM   │ First seen │ Last spot │ RBN age     │ Distance │ Comment   </text>
+<text x="20" y="132" fill="#6b7280" font-weight="normal">────────┼────────────┼──────┼──────────┼─────────┼──────────────────────────────────────────────┼────────────┼──────┼───────┼────────────┼───────────┼─────────────┼──────────┼───────────</text>
+<rect x="16" y="137" width="1856" height="20" fill="#fde047"/>
+<text x="20" y="152" fill="#111827" font-weight="normal">POTA    │ IU1PZC     │ 20m  │  14052.9 │ 14052.9 │ IT-0759 (Parco Naturale del Monte Tre Denti) │ SP5GQ      │   18 │    23 │      00:00 │     01:20 │       00:42 │  1041 km │ ACTIVE NEW</text>
+<rect x="16" y="157" width="1856" height="20" fill="#fde047"/>
+<text x="20" y="172" fill="#111827" font-weight="normal">POTA    │ YO5BDL     │ 20m  │  14054.0 │ 14054.0 │ RO-0155 (Simion Bărnuțiu Central Park)       │ SP5GQ/SQ5J │ 12/9 │ 21/21 │      00:00 │     02:00 │ 00:35/00:58 │   622 km │ ACTIVE NEW</text>
+<rect x="16" y="177" width="1856" height="20" fill="#fde047"/>
+<text x="20" y="192" fill="#111827" font-weight="normal">SOTA    │ SP9DEMO/P  │ 40m  │   7032.0 │  7032.0 │ SP/BZ-001 (Demo summit)                      │ SP5GQ      │   14 │    22 │      00:00 │     02:00 │       00:50 │   193 km │ ACTIVE NEW</text>
+<rect x="16" y="197" width="1856" height="20" fill="#fde047"/>
+<text x="20" y="212" fill="#111827" font-weight="normal">WWFF    │ SP8DEMO/P  │ 20m  │  14044.0 │ 14044.0 │ SPFF-0001 (Demo nature reserve)              │ SP5GQ      │   16 │    24 │      00:00 │     08:00 │       00:40 │   368 km │ ACTIVE NEW</text>
+<text x="20" y="232" fill="#9ca3af" font-weight="normal">HISTORY (0)</text>
+<text x="20" y="252" fill="#f9fafb" font-weight="bold">Program │ Activator  │ Band │ Spot kHz │ RBN kHz │ Reference                                    │ Receiver   │ dB   │ WPM   │ First seen │ Last spot │ RBN age     │ Distance │ Comment   </text>
+<text x="20" y="272" fill="#6b7280" font-weight="normal">────────┼────────────┼──────┼──────────┼─────────┼──────────────────────────────────────────────┼────────────┼──────┼───────┼────────────┼───────────┼─────────────┼──────────┼───────────</text>
+<text x="20" y="292" fill="#9ca3af" font-weight="normal">No entries.</text>
+<text x="20" y="312" fill="#e5e7eb" font-weight="normal"></text>
+<text x="20" y="332" fill="#e5e7eb" font-weight="normal"></text>
+<text x="20" y="352" fill="#e5e7eb" font-weight="normal"></text>
+<text x="20" y="372" fill="#e5e7eb" font-weight="normal"></text>
+<text x="20" y="392" fill="#e5e7eb" font-weight="normal"></text>
+<text x="20" y="412" fill="#e5e7eb" font-weight="normal"></text>
+<text x="20" y="432" fill="#e5e7eb" font-weight="normal"></text>
+<text x="20" y="452" fill="#e5e7eb" font-weight="normal"></text>
+<text x="20" y="472" fill="#e5e7eb" font-weight="normal"></text>
+<text x="20" y="492" fill="#e5e7eb" font-weight="normal"></text>
+<text x="20" y="512" fill="#e5e7eb" font-weight="normal"></text>
+<text x="20" y="532" fill="#9ca3af" font-weight="normal">HTTPS: waiting… | updated: 12:00:00 UTC</text>
+<text x="20" y="552" fill="#9ca3af" font-weight="normal">POTA ≤ 300s | SOTA ≤ 600s | WWFF ≤ 900s | RBN start ≤ 300s | history ≤ 1800s | ±0.5 kHz</text>
+<text x="20" y="572" fill="#9ca3af" font-weight="normal">NEW=new entry BND=new band UPD=kHz change | spot status: ACTIVE/INACTIVE</text>
+<text x="20" y="592" fill="#9ca3af" font-weight="normal">Hidden A/H: 0/0 | Space: acknowledge | b: batches | q: quit</text>
+</g>
+</svg>
