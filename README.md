@@ -289,6 +289,14 @@ accounts for separator widths, wide characters and wrapped Comment lines.
 In very short windows the rule is omitted to preserve room for entries.
 Plain text snapshots retain ASCII separators and numeric alignment.
 
+In the full-screen terminal, **Band** values use stable foreground colours.
+Terminals with 256 colours distinguish individual bands; basic colour
+terminals use a smaller palette. Program labels keep their usual style.
+NEW row highlights and UPD cell highlights take priority over band colours,
+and inactive history remains dimmed. Monochrome terminals and plain text
+snapshots keep their existing presentation. Band colours do not affect CSV
+contents or cause full-screen redraws.
+
 New confirmations appear in a **NEW ACTIVATION / NEW ACTIVATIONS** banner at
 the top for 60 seconds, with program, reference, frequency, receivers and SNR.
 Source errors and warnings also appear above the table. Remaining information

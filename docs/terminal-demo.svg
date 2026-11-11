@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1972" height="432" viewBox="0 0 1972 432" role="img" aria-labelledby="title desc">
   <title id="title">CW Activation Monitor terminal demo</title>
-  <desc id="desc">Fictional POTA, SOTA and WWFF activations with reference QTH locators, RBN receptions, distance, azimuth and aligned columns.</desc>
+  <desc id="desc">Fictional POTA, SOTA and WWFF activations with reference QTH locators, RBN receptions, distance and azimuth. Band text uses distinct colours after the new-row flash expires; new rows retain black text on yellow. All columns have explicit aligned positions.</desc>
   <rect width="1972" height="432" rx="10" fill="#111827" />
   <g font-family="DejaVu Sans Mono" font-size="14" style="font-family: 'DejaVu Sans Mono', Consolas, monospace; font-variant-ligatures: none">
     <text x="20" y="24" fill="#9ca3af">CW Activation Monitor — offline demo / fictional data</text>
@@ -69,66 +69,64 @@
     <path d="M1607.0 158V177" stroke="#6b5b12" />
     <path d="M1708.2 158V177" stroke="#6b5b12" />
     <path d="M1800.2 158V177" stroke="#6b5b12" />
-    <rect x="16" y="177" width="1940" height="20" fill="#fde047" />
-    <text x="20.0" y="192" fill="#111827" font-weight="normal" text-anchor="start">POTA</text>
-    <text x="112.0" y="192" fill="#111827" font-weight="normal" text-anchor="start">YO5BDL</text>
-    <text x="231.6" y="192" fill="#111827" font-weight="normal" text-anchor="start">20m</text>
-    <text x="369.6" y="192" fill="#111827" font-weight="normal" text-anchor="end">14054.0</text>
-    <text x="461.6" y="192" fill="#111827" font-weight="normal" text-anchor="end">14054.0</text>
-    <text x="489.2" y="192" fill="#111827" font-weight="normal" text-anchor="start">RO-0155 (Simion Bărnuțiu Central Park) [KN16SS]</text>
-    <text x="1004.4" y="192" fill="#111827" font-weight="normal" text-anchor="start">SP5GQ/SQ5J</text>
-    <text x="1160.8" y="192" fill="#111827" font-weight="normal" text-anchor="end">12/9</text>
-    <text x="1234.4" y="192" fill="#111827" font-weight="normal" text-anchor="end">21/21</text>
-    <text x="1354.0" y="192" fill="#111827" font-weight="normal" text-anchor="end">00:00</text>
-    <text x="1464.4" y="192" fill="#111827" font-weight="normal" text-anchor="end">02:00</text>
-    <text x="1593.2" y="192" fill="#111827" font-weight="normal" text-anchor="end">00:35/00:58</text>
-    <text x="1694.4" y="192" fill="#111827" font-weight="normal" text-anchor="end">622 km</text>
-    <text x="1786.4" y="192" fill="#111827" font-weight="normal" text-anchor="end">137°</text>
-    <text x="1814.0" y="192" fill="#111827" font-weight="normal" text-anchor="start">ACTIVE NEW</text>
-    <path d="M98.2 178V197" stroke="#6b5b12" />
-    <path d="M217.8 178V197" stroke="#6b5b12" />
-    <path d="M282.2 178V197" stroke="#6b5b12" />
-    <path d="M383.4 178V197" stroke="#6b5b12" />
-    <path d="M475.4 178V197" stroke="#6b5b12" />
-    <path d="M990.6 178V197" stroke="#6b5b12" />
-    <path d="M1110.2 178V197" stroke="#6b5b12" />
-    <path d="M1174.6 178V197" stroke="#6b5b12" />
-    <path d="M1248.2 178V197" stroke="#6b5b12" />
-    <path d="M1367.8 178V197" stroke="#6b5b12" />
-    <path d="M1478.2 178V197" stroke="#6b5b12" />
-    <path d="M1607.0 178V197" stroke="#6b5b12" />
-    <path d="M1708.2 178V197" stroke="#6b5b12" />
-    <path d="M1800.2 178V197" stroke="#6b5b12" />
-    <rect x="16" y="197" width="1940" height="20" fill="#fde047" />
-    <text x="20.0" y="212" fill="#111827" font-weight="normal" text-anchor="start">SOTA</text>
-    <text x="112.0" y="212" fill="#111827" font-weight="normal" text-anchor="start">SP9DEMO/P</text>
-    <text x="231.6" y="212" fill="#111827" font-weight="normal" text-anchor="start">40m</text>
-    <text x="369.6" y="212" fill="#111827" font-weight="normal" text-anchor="end">7032.0</text>
-    <text x="461.6" y="212" fill="#111827" font-weight="normal" text-anchor="end">7032.0</text>
-    <text x="489.2" y="212" fill="#111827" font-weight="normal" text-anchor="start">SP/BZ-001 (Demo summit) [JN99SN]</text>
-    <text x="1004.4" y="212" fill="#111827" font-weight="normal" text-anchor="start">SP5GQ</text>
-    <text x="1160.8" y="212" fill="#111827" font-weight="normal" text-anchor="end">14</text>
-    <text x="1234.4" y="212" fill="#111827" font-weight="normal" text-anchor="end">22</text>
-    <text x="1354.0" y="212" fill="#111827" font-weight="normal" text-anchor="end">00:00</text>
-    <text x="1464.4" y="212" fill="#111827" font-weight="normal" text-anchor="end">02:00</text>
-    <text x="1593.2" y="212" fill="#111827" font-weight="normal" text-anchor="end">00:50</text>
-    <text x="1694.4" y="212" fill="#111827" font-weight="normal" text-anchor="end">193 km</text>
-    <text x="1786.4" y="212" fill="#111827" font-weight="normal" text-anchor="end">146°</text>
-    <text x="1814.0" y="212" fill="#111827" font-weight="normal" text-anchor="start">ACTIVE NEW</text>
-    <path d="M98.2 198V217" stroke="#6b5b12" />
-    <path d="M217.8 198V217" stroke="#6b5b12" />
-    <path d="M282.2 198V217" stroke="#6b5b12" />
-    <path d="M383.4 198V217" stroke="#6b5b12" />
-    <path d="M475.4 198V217" stroke="#6b5b12" />
-    <path d="M990.6 198V217" stroke="#6b5b12" />
-    <path d="M1110.2 198V217" stroke="#6b5b12" />
-    <path d="M1174.6 198V217" stroke="#6b5b12" />
-    <path d="M1248.2 198V217" stroke="#6b5b12" />
-    <path d="M1367.8 198V217" stroke="#6b5b12" />
-    <path d="M1478.2 198V217" stroke="#6b5b12" />
-    <path d="M1607.0 198V217" stroke="#6b5b12" />
-    <path d="M1708.2 198V217" stroke="#6b5b12" />
-    <path d="M1800.2 198V217" stroke="#6b5b12" />
+    <text x="20.0" y="192" fill="#e5e7eb" font-weight="normal" text-anchor="start">POTA</text>
+    <text x="112.0" y="192" fill="#e5e7eb" font-weight="normal" text-anchor="start">YO5BDL</text>
+    <text x="231.6" y="192" fill="#5fff87" font-weight="normal" text-anchor="start">20m</text>
+    <text x="369.6" y="192" fill="#e5e7eb" font-weight="normal" text-anchor="end">14054.0</text>
+    <text x="461.6" y="192" fill="#e5e7eb" font-weight="normal" text-anchor="end">14054.0</text>
+    <text x="489.2" y="192" fill="#e5e7eb" font-weight="normal" text-anchor="start">RO-0155 (Simion Bărnuțiu Central Park) [KN16SS]</text>
+    <text x="1004.4" y="192" fill="#e5e7eb" font-weight="normal" text-anchor="start">SP5GQ/SQ5J</text>
+    <text x="1160.8" y="192" fill="#e5e7eb" font-weight="normal" text-anchor="end">12/9</text>
+    <text x="1234.4" y="192" fill="#e5e7eb" font-weight="normal" text-anchor="end">21/21</text>
+    <text x="1354.0" y="192" fill="#e5e7eb" font-weight="normal" text-anchor="end">00:31</text>
+    <text x="1464.4" y="192" fill="#e5e7eb" font-weight="normal" text-anchor="end">02:00</text>
+    <text x="1593.2" y="192" fill="#e5e7eb" font-weight="normal" text-anchor="end">00:35/00:58</text>
+    <text x="1694.4" y="192" fill="#e5e7eb" font-weight="normal" text-anchor="end">622 km</text>
+    <text x="1786.4" y="192" fill="#e5e7eb" font-weight="normal" text-anchor="end">137°</text>
+    <text x="1814.0" y="192" fill="#e5e7eb" font-weight="normal" text-anchor="start">ACTIVE NEW</text>
+    <path d="M98.2 178V197" stroke="#6b7280" />
+    <path d="M217.8 178V197" stroke="#6b7280" />
+    <path d="M282.2 178V197" stroke="#6b7280" />
+    <path d="M383.4 178V197" stroke="#6b7280" />
+    <path d="M475.4 178V197" stroke="#6b7280" />
+    <path d="M990.6 178V197" stroke="#6b7280" />
+    <path d="M1110.2 178V197" stroke="#6b7280" />
+    <path d="M1174.6 178V197" stroke="#6b7280" />
+    <path d="M1248.2 178V197" stroke="#6b7280" />
+    <path d="M1367.8 178V197" stroke="#6b7280" />
+    <path d="M1478.2 178V197" stroke="#6b7280" />
+    <path d="M1607.0 178V197" stroke="#6b7280" />
+    <path d="M1708.2 178V197" stroke="#6b7280" />
+    <path d="M1800.2 178V197" stroke="#6b7280" />
+    <text x="20.0" y="212" fill="#e5e7eb" font-weight="normal" text-anchor="start">SOTA</text>
+    <text x="112.0" y="212" fill="#e5e7eb" font-weight="normal" text-anchor="start">SP9DEMO/P</text>
+    <text x="231.6" y="212" fill="#87d7ff" font-weight="normal" text-anchor="start">40m</text>
+    <text x="369.6" y="212" fill="#e5e7eb" font-weight="normal" text-anchor="end">7032.0</text>
+    <text x="461.6" y="212" fill="#e5e7eb" font-weight="normal" text-anchor="end">7032.0</text>
+    <text x="489.2" y="212" fill="#e5e7eb" font-weight="normal" text-anchor="start">SP/BZ-001 (Demo summit) [JN99SN]</text>
+    <text x="1004.4" y="212" fill="#e5e7eb" font-weight="normal" text-anchor="start">SP5GQ</text>
+    <text x="1160.8" y="212" fill="#e5e7eb" font-weight="normal" text-anchor="end">14</text>
+    <text x="1234.4" y="212" fill="#e5e7eb" font-weight="normal" text-anchor="end">22</text>
+    <text x="1354.0" y="212" fill="#e5e7eb" font-weight="normal" text-anchor="end">00:31</text>
+    <text x="1464.4" y="212" fill="#e5e7eb" font-weight="normal" text-anchor="end">02:00</text>
+    <text x="1593.2" y="212" fill="#e5e7eb" font-weight="normal" text-anchor="end">00:50</text>
+    <text x="1694.4" y="212" fill="#e5e7eb" font-weight="normal" text-anchor="end">193 km</text>
+    <text x="1786.4" y="212" fill="#e5e7eb" font-weight="normal" text-anchor="end">146°</text>
+    <text x="1814.0" y="212" fill="#e5e7eb" font-weight="normal" text-anchor="start">ACTIVE NEW</text>
+    <path d="M98.2 198V217" stroke="#6b7280" />
+    <path d="M217.8 198V217" stroke="#6b7280" />
+    <path d="M282.2 198V217" stroke="#6b7280" />
+    <path d="M383.4 198V217" stroke="#6b7280" />
+    <path d="M475.4 198V217" stroke="#6b7280" />
+    <path d="M990.6 198V217" stroke="#6b7280" />
+    <path d="M1110.2 198V217" stroke="#6b7280" />
+    <path d="M1174.6 198V217" stroke="#6b7280" />
+    <path d="M1248.2 198V217" stroke="#6b7280" />
+    <path d="M1367.8 198V217" stroke="#6b7280" />
+    <path d="M1478.2 198V217" stroke="#6b7280" />
+    <path d="M1607.0 198V217" stroke="#6b7280" />
+    <path d="M1708.2 198V217" stroke="#6b7280" />
+    <path d="M1800.2 198V217" stroke="#6b7280" />
     <rect x="16" y="217" width="1940" height="20" fill="#fde047" />
     <text x="20.0" y="232" fill="#111827" font-weight="normal" text-anchor="start">WWFF</text>
     <text x="112.0" y="232" fill="#111827" font-weight="normal" text-anchor="start">SP8DEMO/P</text>

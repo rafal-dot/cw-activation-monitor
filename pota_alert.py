@@ -1451,10 +1451,12 @@ class HighlightedText(str):
     """Tekst wiersza z zakresami znaków, które należy wyróżnić osobno."""
 
     def __new__(cls, text: str, highlights: list[tuple[int, int]],
-                separators: list[tuple[int, int]] | None = None):
+                separators: list[tuple[int, int]] | None = None,
+                band_spans: list[tuple[int, int, str]] | None = None):
         result = super().__new__(cls, text)
         result.highlights = tuple(highlights)
         result.separators = tuple(separators or ())
+        result.band_spans = tuple(band_spans or ())
         return result
 
 
@@ -1746,7 +1748,7 @@ def screen_frame(state: Monitor, now: float, height: int, width: int) -> list[tu
     def format_row(values: list[str], changed_fields: set[int] | None = None) -> str:
         header = values == HEADERS
         values = compact_values(values)
-        parts, highlights, separators, offset = [], [], [], 0
+        parts, highlights, separators, band_spans, offset = [], [], [], [], 0
         separator = state.column_layout.separator
         for index, (i, w) in enumerate(columns):
             if index:
@@ -1758,9 +1760,11 @@ def screen_frame(state: Monitor, now: float, height: int, width: int) -> list[tu
             part = fit_column(values[i], w, not header and i in NUMERIC_FIELDS)
             if changed_fields and i in changed_fields:
                 highlights.append((offset + len(part) - len(part.lstrip()), offset + len(part.rstrip())))
+            if not header and i == 9:
+                band_spans.append((offset + len(part) - len(part.lstrip()), offset + len(part.rstrip()), values[i]))
             parts.append(part)
             offset += len(part)
-        return HighlightedText("".join(parts), highlights, separators)
+        return HighlightedText("".join(parts), highlights, separators, band_spans)
 
     shown_active = shown_history = 0
     for title, items, historical in (("ACTIVE / NEW", active, False), ("HISTORY", history, True)):
