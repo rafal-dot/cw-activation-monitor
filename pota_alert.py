@@ -15,6 +15,7 @@ from pathlib import Path
 from queue import Empty, Queue
 import re
 import sys
+import tempfile
 import textwrap
 from threading import Event, Lock, Thread
 import time
@@ -28,7 +29,7 @@ POTA_URL = "https://api.pota.app/spot/activator"
 WWFF_URL = "https://spots.wwff.co/static/spots.json"
 PROGRAMS = ("POTA", "SOTA", "WWFF")
 RBN_URL = "https://www.reversebeacon.net"
-USER_AGENT = "cw-activation-monitor/0.1.0 (read-only activation/RBN monitor)"
+USER_AGENT = "cw-activation-monitor/0.2.0 (read-only activation/RBN monitor)"
 UTC = timezone.utc
 CALL_PATTERN = re.compile(r"[A-Z0-9]+(?:/[A-Z0-9]+)*(?:-\d+)?")
 # Zakresy klasyfikacji z tabeli pasm aplikacji POTA; wartości w kHz.
@@ -617,6 +618,154 @@ def get_log(args: argparse.Namespace) -> EventLog | None:
     return args._event_log
 
 
+@dataclass
+class SummaryRow:
+    date: str
+    program: str
+    callsign: str
+    reference: str
+    name: str
+    band: str
+    first_seen: float
+    last_seen: float
+    frequency: float
+
+    @property
+    def key(self) -> tuple:
+        return self.date, self.program, self.callsign, self.reference, self.band
+
+    def values(self) -> list[str]:
+        return [self.date, self.program, self.callsign, self.reference, self.name, self.band,
+                datetime.fromtimestamp(self.first_seen, UTC).isoformat(),
+                datetime.fromtimestamp(self.last_seen, UTC).isoformat(), str(self.frequency)]
+
+
+class DailySummary:
+    """One persistent row per source UTC day and confirmed activation identity."""
+
+    fields = ("date_utc", "program", "callsign", "reference", "name", "band",
+              "first_seen_utc", "last_seen_utc", "last_frequency_khz")
+
+    def __init__(self, path: Path):
+        import fcntl
+
+        self.path = path.resolve()
+        self.rows: dict[tuple, SummaryRow] = {}
+        self.error, self.dirty, self.closed = "", False, False
+        self.lock = Lock()
+        self.lock_file = self.path.with_name("." + self.path.name + ".lock").open("a")
+        try:
+            try:
+                fcntl.flock(self.lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise ValueError(f"Daily summary is already in use: {self.path}") from exc
+            if self.path.exists() and self.path.stat().st_size:
+                self._load()
+            else:
+                self._write()
+        except Exception:
+            self.lock_file.close()
+            raise
+
+    def _merge(self, incoming: SummaryRow) -> None:
+        current = self.rows.get(incoming.key)
+        if current is None:
+            self.rows[incoming.key] = incoming
+            self.dirty = True
+            return
+        old = current.values()
+        if incoming.name and (not current.name or incoming.last_seen >= current.last_seen):
+            current.name = incoming.name
+        if incoming.last_seen >= current.last_seen:
+            current.frequency = incoming.frequency
+        current.first_seen = min(current.first_seen, incoming.first_seen)
+        current.last_seen = max(current.last_seen, incoming.last_seen)
+        self.dirty |= current.values() != old
+
+    def _load(self) -> None:
+        duplicate = False
+        try:
+            with self.path.open(encoding="utf-8", newline="") as source:
+                reader = csv.DictReader(source, strict=True)
+                if tuple(reader.fieldnames or ()) != self.fields:
+                    raise ValueError("different CSV header")
+                for raw in reader:
+                    if None in raw or any(value is None for value in raw.values()):
+                        raise ValueError(f"wrong column count at line {reader.line_num}")
+                    first, last = timestamp(raw["first_seen_utc"]), timestamp(raw["last_seen_utc"])
+                    freq = frequency(raw["last_frequency_khz"])
+                    pattern = r"[A-Z0-9]+/[A-Z0-9]+-\d+" if raw["program"] == "SOTA" else r"[A-Z0-9]+-\d+"
+                    if (raw["program"] not in PROGRAMS or not CALL_PATTERN.fullmatch(raw["callsign"])
+                            or not re.fullmatch(pattern, raw["reference"])
+                            or first > last
+                            or any(datetime.fromtimestamp(t, UTC).date().isoformat() != raw["date_utc"] for t in (first, last))
+                            or station_band(raw["callsign"], freq)[1] != raw["band"]):
+                        raise ValueError(f"invalid identity, timestamps or band at line {reader.line_num}")
+                    row = SummaryRow(raw["date_utc"], raw["program"], raw["callsign"], raw["reference"],
+                                     " ".join(clean(raw["name"]).split()), raw["band"], first, last, freq)
+                    duplicate |= row.key in self.rows
+                    self._merge(row)
+            self.dirty = duplicate
+        except (csv.Error, UnicodeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"Invalid daily summary file {self.path}: {exc}") from exc
+
+    def observe(self, match: Match, source_time: float) -> None:
+        day = datetime.fromtimestamp(source_time, UTC).date().isoformat()
+        with self.lock:
+            if self.closed:
+                return
+            for reference in match.references:
+                name = " ".join(clean(match.reference_names.get(reference, "")).split())
+                self._merge(SummaryRow(day, match.program, match.call, reference, name,
+                                       station_band(match.call, match.frequency)[1], source_time,
+                                       source_time, match.frequency))
+
+    def _write(self) -> None:
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="", dir=self.path.parent,
+                                             prefix="." + self.path.name + ".", suffix=".tmp", delete=False) as output:
+                temporary = Path(output.name)
+                writer = csv.writer(output)
+                writer.writerow(self.fields)
+                for key in sorted(self.rows):
+                    writer.writerow(self.rows[key].values())
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, self.path)
+            self.dirty, self.error = False, ""
+        finally:
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    def _flush_locked(self) -> None:
+        if self.dirty and not self.closed:
+            try:
+                self._write()
+            except OSError as exc:
+                self.error = clean(exc)
+
+    def flush(self) -> None:
+        with self.lock:
+            self._flush_locked()
+
+    def close(self) -> None:
+        with self.lock:
+            if not self.closed:
+                self._flush_locked()
+                self.closed = True
+                self.lock_file.close()
+
+
+def get_summary(args: argparse.Namespace) -> DailySummary | None:
+    if not hasattr(args, "_daily_summary"):
+        args._daily_summary = DailySummary(args.summary_file) if args.summary_file is not None else None
+    return args._daily_summary
+
+
 class Poller:
     """Independent sources and shared RBN requests, with confirmations per identity."""
 
@@ -784,6 +933,7 @@ class Monitor:
     def __init__(self, args: argparse.Namespace):
         self.args = args
         self.log = get_log(args)
+        self.summary = get_summary(args)
         self.entries: dict[tuple, Entry] = {}
         self.spots: list[ActivationSpot] = []
         self.updated_at: float | None = None
@@ -874,6 +1024,8 @@ class Monitor:
                 entry.spot_time, entry.inactive_since = latest.time, None
                 if old_match != match or old_time != latest.time:
                     self.log_entry("UPDATE", entry, now, update_description(entry, match, now) or "source report/metadata updated")
+            if self.summary and match.program not in snapshot.failed_programs:
+                self.summary.observe(match, latest.time)
         for key, entry in self.entries.items():
             if key in snapshot.inactive and key not in groups:
                 entry.eligible = False
@@ -890,6 +1042,8 @@ class Monitor:
         if snapshot.rbn_status:
             self.rbn_status = snapshot.rbn_status
         self.refresh_lifecycle(now)
+        if self.summary:
+            self.summary.flush()
         return list(reversed(new))
 
     def acknowledge(self, now: float) -> None:
@@ -1155,6 +1309,8 @@ def reports(state: Monitor) -> list[str]:
     result = ["SOURCE ERROR: " + state.error + " | last known data"] if state.error else []
     if state.log and state.log.error:
         result.append("LOG ERROR: " + state.log.error)
+    if state.summary and state.summary.error:
+        result.append("SUMMARY ERROR: " + state.summary.error)
     return result + ["WARNING: " + clean(w) for w in state.warnings]
 
 
@@ -1435,6 +1591,8 @@ def arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--rbn-small-batches", action="store_true",
                         help="allow targeted callsign/receiver batches if the RBN stream exceeds 100 rows")
     parser.add_argument("--log-file", type=Path, help="append activation events to a UTF-8 CSV file")
+    parser.add_argument("--summary-file", type=Path,
+                        help="update a daily CSV with full names, first/last source spots and last frequency; reload on restart")
     parser.add_argument("--log-level", choices=("events", "debug"), default="events",
                         help="CSV log detail (default: events); debug also records fetches and rejected matches")
     parser.add_argument("--once", action="store_true", help="run one cycle and exit")
@@ -1443,6 +1601,12 @@ def arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--bell", action="store_true", help="ring the terminal bell for new confirmations")
     parser.add_argument("--no-clear", action="store_true", help="plain text: keep successive snapshots instead of using curses")
     args = parser.parse_args(argv)
+    if args.log_file is not None and args.summary_file is not None:
+        same_path = args.log_file.resolve() == args.summary_file.resolve()
+        if args.log_file.exists() and args.summary_file.exists():
+            same_path |= os.path.samefile(args.log_file, args.summary_file)
+        if same_path:
+            parser.error("--log-file and --summary-file must be different files")
     args.programs = list(dict.fromkeys(args.programs or (list(PROGRAMS) if args.demo else
                                     ["POTA", "WWFF"] + (["SOTA"] if args.sota_file else []))))
     if "SOTA" in args.programs and args.sota_file is None and not args.demo:
@@ -1582,6 +1746,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args = arguments(argv)
         get_log(args)  # Fail clearly before networking if the log cannot be opened.
+        get_summary(args)
         return run(args)
     except BrokenPipeError:
         return 0
@@ -1592,6 +1757,8 @@ def main(argv: list[str] | None = None) -> int:
         print("\nMonitor stopped.")
         return 0
     finally:
+        if args is not None and getattr(args, "_daily_summary", None):
+            args._daily_summary.close()
         if args is not None and getattr(args, "_event_log", None):
             args._event_log.close()
 

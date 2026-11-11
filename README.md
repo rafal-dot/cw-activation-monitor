@@ -22,6 +22,7 @@ language supplied by their source.
 - Adaptive polling with a smoothed traffic average and recent peak history.
 - Distance from your own QTH, in kilometres or miles.
 - Optional CSV event and diagnostic logs.
+- Optional persistent daily CSV summaries with full reference names and first/last source spots.
 - Optional SOTA import from a local JSON file.
 
 ## Running
@@ -82,6 +83,13 @@ Optional event logging:
 ```bash
 python3 pota_alert.py --log-file activations.csv
 python3 pota_alert.py --log-file diagnostics.csv --log-level debug
+```
+
+Daily summary only, or both independent CSV files with four hours of history:
+
+```bash
+python3 pota_alert.py --summary-file daily.csv
+python3 pota_alert.py --history-max-age 14400 --bell --log-file events.csv --summary-file daily.csv
 ```
 
 Examples:
@@ -440,6 +448,67 @@ it. A write failure during operation is reported above the table and leaves
 monitoring running. The file's parent directory must already exist. A CSV
 log is an export and is not loaded back as the monitor's state after restart.
 
+## Optional daily CSV summary
+
+`--summary-file PATH` maintains a separate UTF-8 CSV, independent of
+`--log-file`. Enable either file or both. It uses the same confirmed CW
+activations as the monitor and makes **no additional network requests**.
+Unconfirmed spots and explicit QRT/non-CW reports are not added to the summary.
+
+There is **one row per UTC day + program + callsign + reference + band**.
+Frequency changes within a band update that row. Another program, callsign,
+reference, band or UTC day creates another row. All days are kept in the same
+file. Rows are sorted by day and identity.
+
+| CSV column | Meaning |
+|---|---|
+| `date_utc` | UTC calendar date of the source report |
+| `program` | POTA, SOTA or WWFF |
+| `callsign` | Exact activator callsign, including portable suffixes |
+| `reference` | Park, summit or nature-area reference |
+| `name` | Full reference name, independent of terminal truncation settings |
+| `band` | Band, such as 20m or 40m; an unrecognized range uses the frequency-based identity |
+| `first_seen_utc` | Earliest source report timestamp observed for this identity and UTC day |
+| `last_seen_utc` | Latest source report timestamp observed for this identity and UTC day |
+| `last_frequency_khz` | Program frequency from the latest source report |
+
+Names come from POTA `name`/`parkName`, WWFF `reference_name`, or the local
+SOTA file's `reference_name`/`summitDetails`. Commas, quotes and Unicode names
+are preserved using normal CSV quoting. A missing name leaves the cell blank;
+a later report can fill it. Missing metadata never erases an existing name.
+
+First/last times are **source timestamps**, rather than detection times,
+poll times or RBN reception times. Re-fetching the same report, a local timer
+tick, moving a row to history, inactivity and a failed source do not advance
+Last seen. Confirmed ACTIVE entries in history still update the summary when
+a new source report arrives. The interval between First seen and Last seen
+is the span of observed reports, not a measurement of continuous activity or
+the activation's actual start/end. If a station returns to the same place and
+band on the same day, the visits are combined into that day's row.
+
+The day also comes from the source timestamp. Re-fetching a pre-midnight
+report after midnight keeps it in the preceding UTC day. A post-midnight
+source report creates the next day's row.
+
+On startup, the existing summary is validated and loaded. Its first sightings
+and old days are retained, newer observations update the same keys, and an
+older report cannot roll back Last seen or its frequency. Valid duplicate
+keys in an existing file are merged. The summary does **not** restore the
+terminal's history or replace the normal RBN confirmation requirement after
+a restart.
+
+Updates replace the CSV atomically after a complete polling snapshot; identical
+data do not rewrite it. On a write failure, the old CSV stays intact, the
+monitor shows **SUMMARY ERROR**, and the next snapshot retries the pending
+changes. An invalid existing file is rejected without overwriting it. Its
+parent directory must already exist.
+
+A small hidden lock file, e.g. `.daily.csv.lock`, prevents two monitor
+processes from overwriting the same summary. It can remain after exit; the
+actual lock is released when the process closes it. Generated CSV, lock and
+temporary files are ignored by Git. Event and summary output must use
+different files.
+
 ## Options
 
 ```bash
@@ -467,6 +536,7 @@ python3 pota_alert.py --help
 | `--rbn-small-batches` | off | Allow targeted batches if the adaptive receiver stream is incomplete |
 | `--log-file PATH` | none | Append event records to a UTF-8 CSV log |
 | `--log-level {events,debug}` | events | Include fetch and rejection diagnostics with debug |
+| `--summary-file PATH` | none | Maintain a persistent daily CSV with full names, first/last source spots and last frequency |
 | `--links` | off | Show program reference and RBN links |
 | `--bell` | off | Bell for new confirmed identities |
 | `--no-clear` | off | Plain text snapshots instead of curses |
@@ -506,6 +576,7 @@ python3 -m unittest discover -s tests -v
 
 GitHub Actions runs the offline tests and demo on Linux with Python 3.10,
 3.12 and 3.14. Tests use controlled data and do not call live radio services.
+The demo smoke test writes both the event log and daily summary.
 
 ## License
 
