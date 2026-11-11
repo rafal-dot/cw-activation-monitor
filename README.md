@@ -20,7 +20,7 @@ language supplied by their source.
 - Incremental terminal display with new activation alerts and history.
 - Separate program spot age limits and RBN reception checks.
 - Adaptive polling with a smoothed traffic average and recent peak history.
-- Distance from your own QTH, in kilometres or miles.
+- Distance from your own QTH, in kilometres or miles, and initial azimuth.
 - Optional CSV event and diagnostic logs.
 - Optional persistent daily CSV summaries with full reference names and first/last source spots.
 - Optional SOTA import from a local JSON file.
@@ -170,7 +170,7 @@ supplied as live spots. Deprecated API placeholder responses are rejected.
 The first column is **Program**, with `POTA`, `SOTA` or `WWFF`. Column order:
 
 **Program → Activator → Band → Spot kHz → RBN kHz → Reference → Receiver →
-dB → WPM → First seen → Last spot → RBN age → Distance → Comment**.
+dB → WPM → First seen → Last spot → RBN age → Distance → Azimuth → Comment**.
 
 Reference means a POTA park, SOTA summit or WWFF area. The field includes the
 reference's name in parentheses when available. The former POTA-specific
@@ -218,12 +218,15 @@ Ages use **minutes:seconds**, such as `12:34/08:07`. Minutes do not wrap after
 an hour: one hour is `60:00`. Counters update locally between requests and in
 history. In narrow terminals, age columns may move below their entry.
 
-## Distance and reference names
+## Distance, azimuth and reference names
 
-Distance is immediately before Comment. It uses **kilometres** by default,
+Distance and Azimuth are adjacent, immediately before Comment. Distance uses **kilometres** by default,
 rounded to whole units, for example `1234 km`. Set your own QTH with `--qth`
 or the `CW_ACTIVATION_QTH` environment variable. Without a QTH, the monitor
-runs normally and displays `—` for distance.
+runs normally and displays `—` for distance and azimuth. A warning above the
+table remains visible for the first 30 seconds, including while the first
+request is in progress. Plain text mode prints the warning once before
+fetching data. Neither mode pauses monitoring.
 
 ```bash
 python3 pota_alert.py --qth JO91AA --distance-unit mi
@@ -243,8 +246,31 @@ latitude/longitude take priority over `grid6`/`grid4` locator centres. Missing
 coordinates show `—`; missing metadata preserves a previously known location.
 Names and coordinates do not cause extra requests. History retains them.
 
+The reference label includes its Maidenhead QTH after the name, for example
+`IT-0759 (Parco Naturale…) [JN34PX]`. Valid source locators are preserved in
+uppercase, including 4- or 8-character values when available. When only
+coordinates are supplied, the monitor derives a 6-character locator. Missing
+QTH metadata does not erase a previously known locator.
+
+Both CSV files store the reference locator in `qth`: after `name` in the daily
+summary, and after `reference` in the event log. It is independent of your own
+`--qth`. On restart, the stored locator centre provides an approximate reference
+position immediately; fresh source coordinates take priority when they arrive.
+
+**Azimuth** is the initial great-circle bearing from your QTH to the
+reference location, in whole degrees clockwise from **true north**:
+`000°` north, `090°` east, `180°` south and `270°` west. It is calculated
+locally from the same coordinates as Distance and does not depend on whether
+distance is shown in kilometres or miles. Missing coordinates and positions
+without a unique bearing (the same point, antipodes or a QTH at a pole) show
+`—`. In narrow terminals, Azimuth moves below the entry with its label,
+alongside other omitted fields as screen height permits.
+
 Full reference names are shown by default and wrap below the row when needed,
-subject to screen height. To truncate or hide names:
+subject to screen height. Every wrapped name line uses the main row's style:
+new entries retain black text on yellow, active entries use their normal
+style, and inactive history is dimmed. Highlight expiry and Space update the
+name lines together with the row. To truncate or hide names:
 
 ```bash
 python3 pota_alert.py --reference-name-length 32
@@ -425,10 +451,15 @@ the lifecycle code do not generate duplicate events. New source timestamps
 are updates even if frequency is unchanged. BAND is the event for that new
 entry, rather than an additional duplicate NEW event.
 
-Columns are event UTC time, event type, program, callsign, reference, band,
-spot frequency, original source UTC time, RBN frequencies, receivers, dB,
-WPM, original RBN UTC times and detail. Multiple receivers use `/` in matching
-order. The log preserves timestamps rather than saving a constantly changing
+Column order is:
+
+```text
+timestamp_utc,source_time_utc,event,program,callsign,reference,qth,band,spot_khz,rbn_khz,receivers,snr_db,wpm,detail
+```
+
+`timestamp_utc` is the event recording time; `source_time_utc` is the original
+program report time. Multiple receivers use `/` in matching order.
+The log preserves timestamps rather than saving a constantly changing
 age. Standard CSV quoting handles commas and quotes; CSV can be read by
 spreadsheets or processed from the terminal. The log is flushed after each
 record and shared safely between terminal and polling threads.
@@ -442,11 +473,13 @@ records each polling cycle and is intended for diagnosing missing entries:
 python3 pota_alert.py --log-file diagnostics.csv --log-level debug
 ```
 
-Existing logs are appended to only if their header matches. A different
-header or an inaccessible file fails clearly at startup, without overwriting
-it. A write failure during operation is reported above the table and leaves
-monitoring running. The file's parent directory must already exist. A CSV
-log is an export and is not loaded back as the monitor's state after restart.
+Existing logs use the current header. The preceding schema without `qth` is
+upgraded automatically, adding an empty column and preserving the original
+file in `.csv-backups/`. Other headers or inaccessible files fail clearly at
+startup. A write failure during operation is reported above the table and leaves
+monitoring running. The file's parent directory must already exist.
+On restart, saved activation events restore recent terminal history as
+described below.
 
 ## Optional daily CSV summary
 
@@ -463,13 +496,14 @@ file. Rows are sorted by day and identity.
 | CSV column | Meaning |
 |---|---|
 | `date_utc` | UTC calendar date of the source report |
+| `first_seen_utc` | Earliest source report timestamp observed for this identity and UTC day |
+| `last_seen_utc` | Latest source report timestamp observed for this identity and UTC day |
 | `program` | POTA, SOTA or WWFF |
 | `callsign` | Exact activator callsign, including portable suffixes |
 | `reference` | Park, summit or nature-area reference |
 | `name` | Full reference name, independent of terminal truncation settings |
+| `qth` | Reference Maidenhead locator, usually 6 characters; blank if unavailable |
 | `band` | Band, such as 20m or 40m; an unrecognized range uses the frequency-based identity |
-| `first_seen_utc` | Earliest source report timestamp observed for this identity and UTC day |
-| `last_seen_utc` | Latest source report timestamp observed for this identity and UTC day |
 | `last_frequency_khz` | Program frequency from the latest source report |
 
 Names come from POTA `name`/`parkName`, WWFF `reference_name`, or the local
@@ -493,9 +527,8 @@ source report creates the next day's row.
 On startup, the existing summary is validated and loaded. Its first sightings
 and old days are retained, newer observations update the same keys, and an
 older report cannot roll back Last seen or its frequency. Valid duplicate
-keys in an existing file are merged. The summary does **not** restore the
-terminal's history or replace the normal RBN confirmation requirement after
-a restart.
+keys in an existing file are merged. Recent rows also supplement restored
+terminal history. A summary alone does not identify a confirming RBN receiver.
 
 Updates replace the CSV atomically after a complete polling snapshot; identical
 data do not rewrite it. On a write failure, the old CSV stays intact, the
@@ -508,6 +541,43 @@ processes from overwriting the same summary. It can remain after exit; the
 actual lock is released when the process closes it. Generated CSV, lock and
 temporary files are ignored by Git. Event and summary output must use
 different files.
+
+## Resume after restarting
+
+Use the same log paths and history limit when restarting:
+
+```bash
+python3 pota_alert.py --history-max-age 14400 --bell --log-file events.csv --summary-file daily.csv
+```
+
+Existing files are read before fetching live data. `events.csv` restores
+activation identities, detection times, source timestamps, receiver details
+and activity transitions. `daily.csv` supplies full reference names and
+first/last source observations, including confirmed identities missing from
+the event log. Either file can also be used on its own.
+
+Restored entries appear in **HISTORY** with **RESTORED** in Comment. Their
+initial status is **UNKNOWN** until the program source is read successfully.
+Old entries do not trigger NEW highlights or the bell. A fresh program report
+can mark an entry ACTIVE while keeping it in HISTORY. A saved confirmation
+from a currently selected receiver is reused; entries available only in the
+daily summary still need an RBN confirmation. New bands and references remain
+separate identities.
+
+The configured per-program spot age and `--history-max-age` apply to saved
+timestamps, including time while the monitor was stopped. Restarting does not
+extend retention or update the daily summary. Invalid event records are
+skipped with a warning; malformed CSV syntax and incompatible headers produce
+a startup error.
+
+The CSV files store reference locators rather than exact coordinates. Distance
+and Azimuth can be calculated from the stored QTH immediately; without a saved
+QTH they remain `—` until coordinates arrive in a fresh source report.
+RBN age remains `—` for restored receptions until an
+actual timestamped reception is available. Without a NEW/BAND event, the
+detection time for First seen is unknown and also shown as `—`; daily source
+timestamps are preserved with their original meaning. Demo mode ignores
+saved real entries.
 
 ## Options
 

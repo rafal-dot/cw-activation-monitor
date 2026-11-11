@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 from collections import deque
 import csv
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 import json
 import math
@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 from queue import Empty, Queue
 import re
+import shutil
 import sys
 import tempfile
 import textwrap
@@ -29,7 +30,7 @@ POTA_URL = "https://api.pota.app/spot/activator"
 WWFF_URL = "https://spots.wwff.co/static/spots.json"
 PROGRAMS = ("POTA", "SOTA", "WWFF")
 RBN_URL = "https://www.reversebeacon.net"
-USER_AGENT = "cw-activation-monitor/0.2.0 (read-only activation/RBN monitor)"
+USER_AGENT = "cw-activation-monitor/0.3.0 (read-only activation/RBN monitor)"
 UTC = timezone.utc
 CALL_PATTERN = re.compile(r"[A-Z0-9]+(?:/[A-Z0-9]+)*(?:-\d+)?")
 # Zakresy klasyfikacji z tabeli pasm aplikacji POTA; wartości w kHz.
@@ -124,16 +125,43 @@ def qth_coordinates(value: str) -> tuple[float, float]:
     return locator_coordinates(value)
 
 
+def location_locator(location: tuple[float, float]) -> str:
+    lat, lon = location
+    x = min(4319, max(0, math.floor((lon + 180) * 12)))
+    y = min(4319, max(0, math.floor((lat + 90) * 24)))
+    return (chr(65 + x // 240) + chr(65 + y // 240)
+            + str(x // 24 % 10) + str(y // 24 % 10)
+            + chr(65 + x % 24) + chr(65 + y % 24))
+
+
+def reference_qth(item: dict) -> str:
+    for key in ("grid8", "grid6", "qth", "locator", "grid", "grid4"):
+        value = str(item.get(key) or "").strip().upper()
+        try:
+            locator_coordinates(value)
+        except ValueError:
+            continue
+        if len(value) >= 6:
+            return value
+    location = coordinates(item.get("latitude"), item.get("longitude"))
+    if location is not None:
+        return location_locator(location)
+    for key in ("grid4", "qth", "locator", "grid"):
+        value = str(item.get(key) or "").strip().upper()
+        try:
+            locator_coordinates(value)
+            return value
+        except ValueError:
+            continue
+    return ""
+
+
 def park_coordinates(item: dict) -> tuple[float, float] | None:
     result = coordinates(item.get("latitude"), item.get("longitude"))
     if result is not None:
         return result
-    for key in ("grid6", "grid4"):
-        try:
-            return locator_coordinates(str(item.get(key, "")))
-        except ValueError:
-            continue
-    return None
+    qth = reference_qth(item)
+    return locator_coordinates(qth) if qth else None
 
 
 def distance_text(origin: tuple[float, float] | None,
@@ -148,6 +176,22 @@ def distance_text(origin: tuple[float, float] | None,
     return f"{km / 1.609344 if unit == 'mi' else km:.0f} {unit}"
 
 
+def azimuth_text(origin: tuple[float, float] | None,
+                 destination: tuple[float, float] | None) -> str:
+    """Initial great-circle bearing, clockwise from true north."""
+    if origin is None or destination is None:
+        return "—"
+    lat1, lon1 = map(math.radians, origin)
+    lat2, lon2 = map(math.radians, destination)
+    delta = lon2 - lon1
+    y = math.sin(delta) * math.cos(lat2)
+    x = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(delta)
+    if abs(math.cos(lat1)) < 1e-12 or math.hypot(x, y) < 1e-12:
+        return "—"  # No unique bearing at the origin pole, same point or antipode.
+    bearing = math.degrees(math.atan2(y, x)) % 360
+    return f"{round(bearing) % 360:03d}°"
+
+
 @dataclass(frozen=True)
 class ActivationSpot:
     call: str
@@ -157,6 +201,11 @@ class ActivationSpot:
     name: str = field(default="", compare=False)
     location: tuple[float, float] | None = field(default=None, compare=False)
     program: str = "POTA"
+    qth: str = field(default="", compare=False)
+
+    def __post_init__(self) -> None:
+        if not self.qth and self.location is not None:
+            object.__setattr__(self, "qth", location_locator(self.location))
 
     @property
     def key(self) -> tuple:
@@ -168,7 +217,7 @@ class RbnSpot:
     call: str
     receiver: str
     frequency: float
-    time: float
+    time: float | None
     snr: int
     wpm: int
 
@@ -182,6 +231,11 @@ class Match:
     reference_names: dict[str, str] = field(default_factory=dict)
     location: tuple[float, float] | None = None
     program: str = "POTA"
+    reference_qths: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if len(self.references) == 1 and self.location is not None and not self.reference_qths.get(self.references[0]):
+            self.reference_qths[self.references[0]] = location_locator(self.location)
 
     @property
     def key(self) -> tuple:
@@ -220,7 +274,8 @@ def read_pota(payload: object, now: float, max_age: float) -> tuple[list[Activat
             continue
         try:
             name = " ".join(clean(item.get("name") or item.get("parkName") or "").split())
-            selected.append(ActivationSpot(call, park, freq, when, name, park_coordinates(item)))
+            selected.append(ActivationSpot(call, park, freq, when, name, park_coordinates(item),
+                                           qth=reference_qth(item)))
         except (KeyError, TypeError, ValueError, OverflowError):
             skipped += 1
     if payload and skipped == len(payload):
@@ -257,7 +312,7 @@ def read_program(payload: object, program: str, now: float, max_age: float) -> t
                 raise ValueError("Invalid timestamp")
             normalized.append((ActivationSpot(call, reference, freq, when,
                                " ".join(clean(item.get("reference_name") or item.get("summitDetails") or "").split()),
-                               park_coordinates(item), program),
+                               park_coordinates(item), program, reference_qth(item)),
                                str(item.get("mode", "")).strip().upper(),
                                str(item.get("remarks") or item.get("comments") or ""), bool(item.get("invalid"))))
         except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
@@ -293,7 +348,7 @@ def join_spots(spots: list[ActivationSpot], rbn: list[RbnSpot], receivers: list[
             groups.setdefault(spot.key, []).append(spot)
     by_call: dict[str, list[RbnSpot]] = {}
     for spot in rbn:
-        if spot.receiver in receivers and 0 <= now - spot.time <= rbn_age:
+        if spot.receiver in receivers and spot.time is not None and 0 <= now - spot.time <= rbn_age:
             by_call.setdefault(spot.call, []).append(spot)
     result = []
     for (call, band, park, program), activations in groups.items():
@@ -308,7 +363,8 @@ def join_spots(spots: list[ActivationSpot], rbn: list[RbnSpot], receivers: list[
             result.append(Match(call, (park,), freq,
                                 [heard[r] for r in receivers if r in heard],
                                 {p.reference: p.name for p in activations if p.name},
-                                max(activations, key=lambda p: p.time).location, program))
+                                max(activations, key=lambda p: p.time).location, program,
+                                {p.reference: p.qth for p in activations if p.qth}))
     return sorted(result, key=lambda row: (-max(s.time for s in row.receptions), row.call))
 
 
@@ -560,21 +616,80 @@ class Snapshot:
     rbn_status: str = ""
 
 
+def upgrade_qth_csv(path: Path, fields: tuple[str, ...]) -> None:
+    """Add the optional QTH column to the preceding schema, preserving a backup."""
+    if not path.exists() or not path.stat().st_size:
+        return
+    original = path.stat()
+    with path.open(encoding="utf-8", newline="") as source:
+        reader = csv.DictReader(source, strict=True)
+        header = tuple(reader.fieldnames or ())
+        if header == fields:
+            return
+        if header != tuple(name for name in fields if name != "qth"):
+            raise ValueError(f"File has a different CSV header: {path}")
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="", dir=path.parent,
+                                             prefix="." + path.name + ".", suffix=".tmp", delete=False) as output:
+                temporary = Path(output.name)
+                writer = csv.DictWriter(output, fieldnames=fields)
+                writer.writeheader()
+                for row in reader:
+                    if None in row or any(value is None for value in row.values()):
+                        raise ValueError(f"Wrong column count in {path}, line {reader.line_num}")
+                    writer.writerow(dict(row, qth=""))
+                output.flush()
+                os.fsync(output.fileno())
+            os.chmod(temporary, original.st_mode & 0o777)
+            current = path.stat()
+            if (current.st_ino, current.st_size, current.st_mtime_ns) != (original.st_ino, original.st_size, original.st_mtime_ns):
+                raise ValueError(f"CSV changed during upgrade: {path}")
+            backup_dir = path.parent / ".csv-backups"
+            backup_dir.mkdir(exist_ok=True)
+            backup = Path(tempfile.mkdtemp(prefix="before-qth-", dir=backup_dir)) / path.name
+            shutil.copy2(path, backup)
+            if path.stat().st_mtime_ns != original.st_mtime_ns or path.stat().st_size != original.st_size:
+                raise ValueError(f"CSV changed during upgrade: {path}")
+            os.replace(temporary, path)
+        except csv.Error as exc:
+            raise ValueError(f"Invalid CSV file {path}: {exc}") from exc
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+
 class EventLog:
-    fields = ("timestamp_utc", "event", "program", "callsign", "reference", "band",
-              "spot_khz", "source_time_utc", "rbn_khz", "receivers", "snr_db", "wpm", "rbn_time_utc", "detail")
+    fields = ("timestamp_utc", "source_time_utc", "event", "program", "callsign",
+              "reference", "qth", "band", "spot_khz", "rbn_khz", "receivers", "snr_db", "wpm", "detail")
 
     def __init__(self, path: Path, level: str):
+        self.path = path
         self.level, self.error, self.lock, self.closed = level, "", Lock(), False
+        upgrade_qth_csv(path, self.fields)
         if path.exists() and path.stat().st_size:
             with path.open(encoding="utf-8", newline="") as source:
                 if tuple(next(csv.reader(source), ())) != self.fields:
                     raise ValueError(f"Log file has a different CSV header: {path}")
+            with path.open("rb") as source:
+                source.seek(-1, os.SEEK_END)
+                needs_newline = source.read(1) not in (b"\n", b"\r")
+        else:
+            needs_newline = False
         self.file = path.open("a", encoding="utf-8", newline="")
         self.writer = csv.writer(self.file)
         if self.file.tell() == 0:
             self.writer.writerow(self.fields)
             self.file.flush()
+        self.needs_newline = needs_newline
+
+    def records(self):
+        """Read saved events before the polling thread starts."""
+        with self.lock, self.path.open(encoding="utf-8", newline="") as source:
+            try:
+                yield from csv.DictReader(source, strict=True)
+            except (csv.Error, UnicodeError) as exc:
+                raise ValueError(f"Cannot restore event log {self.path}: {exc}") from exc
 
     @staticmethod
     def utc(when: float) -> str:
@@ -584,20 +699,24 @@ class EventLog:
                detail: str = "", spot_time: float | None = None, debug: bool = False) -> None:
         if debug and self.level != "debug":
             return
-        row = [self.utc(now), event, "", "", "", "", "", "", "", "", "", "", "", clean(detail)]
+        values = {"timestamp_utc": self.utc(now), "event": event, "detail": clean(detail)}
         if match is not None:
-            row[2:13] = [match.program, match.call, "/".join(match.references), band_for(match.frequency),
-                         f"{match.frequency:.1f}", self.utc(spot_time) if spot_time is not None else "",
-                         "/".join(f"{r.frequency:.1f}" for r in match.receptions),
-                         "/".join(r.receiver for r in match.receptions),
-                         "/".join(str(r.snr) for r in match.receptions),
-                         "/".join(str(r.wpm) for r in match.receptions),
-                         "/".join(self.utc(r.time) for r in match.receptions)]
+            values.update(source_time_utc=self.utc(spot_time) if spot_time is not None else "",
+                          program=match.program, callsign=match.call, reference="/".join(match.references),
+                          qth="/".join(match.reference_qths.get(p, "") for p in match.references),
+                          band=band_for(match.frequency), spot_khz=f"{match.frequency:.1f}",
+                          rbn_khz="/".join(f"{r.frequency:.1f}" for r in match.receptions),
+                          receivers="/".join(r.receiver for r in match.receptions),
+                          snr_db="/".join(str(r.snr) for r in match.receptions),
+                          wpm="/".join(str(r.wpm) for r in match.receptions))
         with self.lock:
             if self.closed or self.error:
                 return
             try:
-                self.writer.writerow(row)
+                if self.needs_newline:
+                    self.file.write("\n")
+                    self.needs_newline = False
+                self.writer.writerow([values.get(name, "") for name in self.fields])
                 self.file.flush()
             except OSError as exc:
                 self.error = clean(exc)
@@ -614,6 +733,8 @@ class EventLog:
 
 def get_log(args: argparse.Namespace) -> EventLog | None:
     if not hasattr(args, "_event_log"):
+        if args.summary_file is not None:
+            get_summary(args)  # Acquire the summary lock before upgrading either log.
         args._event_log = EventLog(args.log_file, args.log_level) if args.log_file is not None else None
     return args._event_log
 
@@ -629,22 +750,24 @@ class SummaryRow:
     first_seen: float
     last_seen: float
     frequency: float
+    qth: str = ""
 
     @property
     def key(self) -> tuple:
         return self.date, self.program, self.callsign, self.reference, self.band
 
     def values(self) -> list[str]:
-        return [self.date, self.program, self.callsign, self.reference, self.name, self.band,
+        return [self.date,
                 datetime.fromtimestamp(self.first_seen, UTC).isoformat(),
-                datetime.fromtimestamp(self.last_seen, UTC).isoformat(), str(self.frequency)]
+                datetime.fromtimestamp(self.last_seen, UTC).isoformat(),
+                self.program, self.callsign, self.reference, self.name, self.qth, self.band, str(self.frequency)]
 
 
 class DailySummary:
     """One persistent row per source UTC day and confirmed activation identity."""
 
-    fields = ("date_utc", "program", "callsign", "reference", "name", "band",
-              "first_seen_utc", "last_seen_utc", "last_frequency_khz")
+    fields = ("date_utc", "first_seen_utc", "last_seen_utc", "program", "callsign", "reference", "name", "qth", "band",
+              "last_frequency_khz")
 
     def __init__(self, path: Path):
         import fcntl
@@ -661,6 +784,7 @@ class DailySummary:
                 raise ValueError(f"Daily summary is already in use: {self.path}") from exc
             if self.path.exists() and self.path.stat().st_size:
                 self._load()
+                upgrade_qth_csv(self.path, self.fields)
             else:
                 self._write()
         except Exception:
@@ -676,6 +800,8 @@ class DailySummary:
         old = current.values()
         if incoming.name and (not current.name or incoming.last_seen >= current.last_seen):
             current.name = incoming.name
+        if incoming.qth and (not current.qth or incoming.last_seen >= current.last_seen):
+            current.qth = incoming.qth
         if incoming.last_seen >= current.last_seen:
             current.frequency = incoming.frequency
         current.first_seen = min(current.first_seen, incoming.first_seen)
@@ -687,12 +813,15 @@ class DailySummary:
         try:
             with self.path.open(encoding="utf-8", newline="") as source:
                 reader = csv.DictReader(source, strict=True)
-                if tuple(reader.fieldnames or ()) != self.fields:
+                if tuple(reader.fieldnames or ()) not in (self.fields, tuple(f for f in self.fields if f != "qth")):
                     raise ValueError("different CSV header")
                 for raw in reader:
                     if None in raw or any(value is None for value in raw.values()):
                         raise ValueError(f"wrong column count at line {reader.line_num}")
                     first, last = timestamp(raw["first_seen_utc"]), timestamp(raw["last_seen_utc"])
+                    qth = raw.get("qth", "").strip().upper()
+                    if qth:
+                        locator_coordinates(qth)
                     freq = frequency(raw["last_frequency_khz"])
                     pattern = r"[A-Z0-9]+/[A-Z0-9]+-\d+" if raw["program"] == "SOTA" else r"[A-Z0-9]+-\d+"
                     if (raw["program"] not in PROGRAMS or not CALL_PATTERN.fullmatch(raw["callsign"])
@@ -702,7 +831,7 @@ class DailySummary:
                             or station_band(raw["callsign"], freq)[1] != raw["band"]):
                         raise ValueError(f"invalid identity, timestamps or band at line {reader.line_num}")
                     row = SummaryRow(raw["date_utc"], raw["program"], raw["callsign"], raw["reference"],
-                                     " ".join(clean(raw["name"]).split()), raw["band"], first, last, freq)
+                                     " ".join(clean(raw["name"]).split()), raw["band"], first, last, freq, qth)
                     duplicate |= row.key in self.rows
                     self._merge(row)
             self.dirty = duplicate
@@ -718,7 +847,7 @@ class DailySummary:
                 name = " ".join(clean(match.reference_names.get(reference, "")).split())
                 self._merge(SummaryRow(day, match.program, match.call, reference, name,
                                        station_band(match.call, match.frequency)[1], source_time,
-                                       source_time, match.frequency))
+                                       source_time, match.frequency, match.reference_qths.get(reference, "")))
 
     def _write(self) -> None:
         temporary = None
@@ -775,7 +904,8 @@ class Poller:
         self.rbn = RbnClient(args.timeout, small_batches)
         if args.rbn_small_batches:
             self.rbn.small_batches.set()
-        self.confirmed: dict[tuple, list[RbnSpot]] = {}
+        self.confirmed = {key: list(entry.match.receptions)
+                          for key, entry in startup_entries(args)[0].items() if entry.match.receptions}
         self.source_spots: dict[str, list[ActivationSpot]] = {}
         self.retry_at: dict[str, float] = {}
         self.source_errors: dict[str, str] = {}
@@ -880,7 +1010,9 @@ class Poller:
                 else:
                     reason = f"frequency mismatch: spot={p.frequency:g}, RBN=" + "/".join(f"{r.frequency:g}" for r in same_band)
                 detail = f"{p.program} {p.call} {p.reference}: {reason}; age limit={args.rbn_max_age:g}s, tolerance={args.tolerance:g}kHz"
-                self.log.record("RBN_REJECT", now, Match(p.call, (p.reference,), p.frequency, [], program=p.program),
+                self.log.record("RBN_REJECT", now, Match(p.call, (p.reference,), p.frequency, [],
+                                location=p.location, program=p.program,
+                                reference_qths={p.reference: p.qth} if p.qth else {}),
                                 detail, p.time, debug=True)
         # Odczyty z pamięci zachowują oryginalny czas odbioru. Nie są odświeżane
         # przez sam fakt ponownego pobrania POTA.
@@ -910,21 +1042,146 @@ class Entry:
     spot_time: float = 0
     previous_bands: tuple[str, ...] = ()
     logged_active: bool = True
+    restored: bool = False
+    awaiting_source: bool = False
+    first_seen_known: bool = True
 
     @property
-    def last_heard(self) -> float:
-        return max(r.time for r in self.match.receptions)
+    def last_heard(self) -> float | None:
+        return max((r.time for r in self.match.receptions if r.time is not None), default=None)
 
     def active_match(self, now: float) -> Match | None:
         references = tuple(p for p in self.match.references if now <= self.spot_deadlines[p])
         # Świeżość RBN sprawdzamy przy pierwszym potwierdzeniu. Później
         # o aktywności decyduje ważność POTA, a czas odbioru pozostaje oryginalny.
-        receptions = [r for r in self.match.receptions if r.time <= now]
-        if self.eligible and references and receptions:
+        receptions = [r for r in self.match.receptions if r.time is None or r.time <= now]
+        if self.eligible and not self.awaiting_source and references and receptions:
             return Match(self.match.call, references, self.match.frequency, receptions,
                          {p: name for p, name in self.match.reference_names.items() if p in references},
-                         self.match.location, self.match.program)
+                         self.match.location, self.match.program,
+                         {p: qth for p, qth in self.match.reference_qths.items() if p in references})
         return None
+
+
+def latest_reception(match: Match) -> RbnSpot | None:
+    return max(match.receptions, key=lambda r: r.time if r.time is not None else -math.inf, default=None)
+
+
+def startup_entries(args: argparse.Namespace) -> tuple[dict[tuple, Entry], int]:
+    """Replay event lifecycles and enrich them with the independent daily summary."""
+    if hasattr(args, "_startup_entries"):
+        return args._startup_entries
+    entries, replayed_at, skipped = {}, {}, 0
+    now = time.time()
+    log, summary = get_log(args), get_summary(args)
+    if not args.demo and log:
+        for raw in log.records():
+            try:
+                if None in raw or any(value is None for value in raw.values()):
+                    raise ValueError("wrong column count")
+                event = raw["event"]
+                if event not in {"NEW", "BAND", "UPDATE", "HISTORY", "INACTIVE", "ACTIVE"}:
+                    continue
+                program, call = raw["program"], raw["callsign"]
+                if program not in PROGRAMS:
+                    raise ValueError("invalid program")
+                if program not in args.programs:
+                    continue
+                when, source_time = timestamp(raw["timestamp_utc"]), timestamp(raw["source_time_utc"])
+                freq = frequency(raw["spot_khz"])
+                if when > now or source_time > when:
+                    continue
+                if not CALL_PATTERN.fullmatch(call) or raw["band"] != band_for(freq):
+                    raise ValueError("invalid callsign or band")
+                pattern = r"[A-Z0-9]+/[A-Z0-9]+-\d+" if program == "SOTA" else r"[A-Z0-9]+-\d+"
+                references = tuple(re.findall(pattern, raw["reference"]))
+                if not references or "/".join(references) != raw["reference"]:
+                    raise ValueError("invalid reference")
+                qths = raw["qth"].split("/") if raw["qth"] else [""] * len(references)
+                if len(qths) != len(references):
+                    raise ValueError("mismatched reference QTH fields")
+                qths = [qth.strip().upper() for qth in qths]
+                for qth in qths:
+                    if qth:
+                        locator_coordinates(qth)
+                columns = [raw[name].split("/") if raw[name] else []
+                           for name in ("receivers", "rbn_khz", "snr_db", "wpm")]
+                if len({len(values) for values in columns}) != 1:
+                    raise ValueError("mismatched receiver fields")
+                receptions = []
+                for receiver, rbn_freq, snr, wpm in zip(*columns):
+                    if not CALL_PATTERN.fullmatch(receiver):
+                        raise ValueError("invalid receiver")
+                    reception = RbnSpot(call, receiver, frequency(rbn_freq), None, int(snr), int(wpm))
+                    if receiver in args.spotters:
+                        receptions.append(reception)
+                receptions.sort(key=lambda r: args.spotters.index(r.receiver))
+                for reference, qth in zip(references, qths):
+                    match = Match(call, (reference,), freq, receptions,
+                                  location=locator_coordinates(qth) if qth else None, program=program,
+                                  reference_qths={reference: qth} if qth else {})
+                    key = match.key
+                    if when < replayed_at.get(key, -math.inf):
+                        continue
+                    replayed_at[key] = when
+                    old = entries.get(key)
+                    if old is None or event in {"NEW", "BAND"}:
+                        entry = Entry(match, {reference: source_time + max_spot_age(args, program)},
+                                      0, 0, 0, created_at=when, archived=True, spot_time=source_time,
+                                      restored=True, awaiting_source=True,
+                                      first_seen_known=event in {"NEW", "BAND"})
+                        entries[key] = entry
+                    else:
+                        entry = old
+                        if source_time >= entry.spot_time:
+                            entry.match, entry.spot_time = match, source_time
+                            entry.spot_deadlines = {reference: source_time + max_spot_age(args, program)}
+                    if event == "INACTIVE":
+                        entry.eligible = False
+                        entry.inactive_since = min(when, max(entry.spot_deadlines.values()))
+                    elif event in {"NEW", "BAND", "UPDATE", "ACTIVE"}:
+                        entry.eligible, entry.inactive_since = True, None
+            except (ValueError, TypeError, OverflowError):
+                skipped += 1
+    if not args.demo and summary:
+        for row in sorted(summary.rows.values(), key=lambda r: r.last_seen):
+            if row.program not in args.programs or row.last_seen > now:
+                continue
+            match = Match(row.callsign, (row.reference,), row.frequency, [],
+                          {row.reference: row.name} if row.name else {},
+                          location=locator_coordinates(row.qth) if row.qth else None, program=row.program,
+                          reference_qths={row.reference: row.qth} if row.qth else {})
+            entry = entries.get(match.key)
+            if entry is None:
+                entry = Entry(match, {row.reference: row.last_seen + max_spot_age(args, row.program)},
+                              0, 0, 0, created_at=row.first_seen, archived=True, spot_time=row.last_seen,
+                              restored=True, awaiting_source=True, first_seen_known=False)
+                entries[match.key] = entry
+            else:
+                if row.name and row.last_seen >= entry.spot_time:
+                    entry.match.reference_names[row.reference] = row.name
+                elif row.name and not entry.match.reference_names.get(row.reference):
+                    entry.match.reference_names[row.reference] = row.name
+                if row.qth and (row.last_seen >= entry.spot_time or not entry.match.reference_qths.get(row.reference)):
+                    entry.match.reference_qths[row.reference] = row.qth
+                    entry.match.location = locator_coordinates(row.qth)
+                if row.last_seen > entry.spot_time:
+                    entry.match.frequency, entry.spot_time = row.frequency, row.last_seen
+                    entry.spot_deadlines = {row.reference: row.last_seen + max_spot_age(args, row.program)}
+                    entry.eligible, entry.inactive_since = True, None
+    retained = {}
+    for key, entry in sorted(entries.items(), key=lambda item: item[1].spot_time):
+        deadline = max(entry.spot_deadlines.values())
+        if deadline < now and entry.inactive_since is None:
+            entry.inactive_since = deadline
+        expires = entry.inactive_since if entry.inactive_since is not None else deadline
+        if now - expires > args.history_max_age:
+            continue
+        entry.rank = len(retained) + 1
+        entry.logged_active = bool(entry.eligible and entry.match.receptions and now <= deadline)
+        retained[key] = entry
+    args._startup_entries = retained, skipped
+    return args._startup_entries
 
 
 class Monitor:
@@ -934,7 +1191,8 @@ class Monitor:
         self.args = args
         self.log = get_log(args)
         self.summary = get_summary(args)
-        self.entries: dict[tuple, Entry] = {}
+        restored, self.restore_skipped = startup_entries(args)
+        self.entries = {key: replace(entry) for key, entry in restored.items()}
         self.spots: list[ActivationSpot] = []
         self.updated_at: float | None = None
         self.error = ""
@@ -942,8 +1200,15 @@ class Monitor:
         self.loading = False
         self.next_poll_at: float | None = None  # Zegar monotoniczny, tak jak harmonogram wątku.
         self.column_layout = ColumnLayout()
-        self.rank = 0
+        self.rank = len(self.entries)
         self.rbn_status = ""
+        self.qth_warning_until = time.monotonic() + 30
+        self.restore_count = len(self.entries)
+
+    def qth_warning(self) -> str:
+        if self.args.qth is None and time.monotonic() < self.qth_warning_until:
+            return "WARNING: QTH not set; cannot estimate distance or azimuth. Use --qth LOCATOR."
+        return ""
 
     def log_entry(self, event: str, entry: Entry, now: float, detail: str = "") -> None:
         if self.log:
@@ -982,18 +1247,25 @@ class Monitor:
             entry = self.entries.get(key)
             if entry is None and key not in fresh:
                 continue
+            if entry is not None and not entry.match.receptions and key not in fresh:
+                continue  # A daily summary alone does not identify a confirming receiver.
             latest = max(spots, key=lambda p: p.time)
             if entry is not None and latest.time < entry.spot_time:
                 continue  # Opóźniony odczyt API nie cofa ostatniej częstotliwości.
             heard = {}
             for match in ([entry.match] if entry else []) + ([fresh[key]] if key in fresh else []):
                 for reception in match.receptions:
-                    if reception.receiver not in heard or reception.time > heard[reception.receiver].time:
+                    if (reception.receiver not in heard or (reception.time is not None
+                            and (heard[reception.receiver].time is None
+                                 or reception.time > heard[reception.receiver].time))):
                         heard[reception.receiver] = reception
             match = Match(latest.call, tuple(sorted({p.reference for p in spots})), latest.frequency,
                           [heard[r] for r in args.spotters if r in heard],
-                          {p.reference: p.name for p in spots if p.name},
-                          latest.location or (entry.match.location if entry else None), latest.program)
+                          {p.reference: p.name or (entry.match.reference_names.get(p.reference, "") if entry else "")
+                           for p in spots},
+                          latest.location or (entry.match.location if entry else None), latest.program,
+                          {p.reference: p.qth or (entry.match.reference_qths.get(p.reference, "") if entry else "")
+                           for p in spots})
             deadlines = {p.reference: p.time + max_spot_age(args, p.program) for p in spots}
             if entry is None:
                 self.rank += 1
@@ -1012,10 +1284,9 @@ class Monitor:
                 if entry.match.frequency != match.frequency:
                     entry.previous_frequency = entry.match.frequency
                     changed_fields.add(3)
-                previous_rbn = max(entry.match.receptions, key=lambda r: r.time).frequency
-                latest_rbn = max(match.receptions, key=lambda r: r.time).frequency
-                if previous_rbn != latest_rbn:
-                    entry.previous_rbn_frequency = previous_rbn
+                previous_rbn, latest_rbn = latest_reception(entry.match), latest_reception(match)
+                if previous_rbn and latest_rbn and previous_rbn.frequency != latest_rbn.frequency:
+                    entry.previous_rbn_frequency = previous_rbn.frequency
                     changed_fields.add(8)
                 if changed_fields:
                     entry.updated_fields = changed_fields
@@ -1025,8 +1296,11 @@ class Monitor:
                 if old_match != match or old_time != latest.time:
                     self.log_entry("UPDATE", entry, now, update_description(entry, match, now) or "source report/metadata updated")
             if self.summary and match.program not in snapshot.failed_programs:
-                self.summary.observe(match, latest.time)
+                if match.receptions:
+                    self.summary.observe(match, latest.time)
         for key, entry in self.entries.items():
+            if entry.match.program not in snapshot.failed_programs:
+                entry.awaiting_source = False
             if key in snapshot.inactive and key not in groups:
                 entry.eligible = False
                 self.archive(entry, now)
@@ -1061,6 +1335,10 @@ class Monitor:
 
     def refresh_lifecycle(self, now: float) -> None:
         for entry in self.entries.values():
+            if entry.awaiting_source:
+                if entry.inactive_since is None and now > max(entry.spot_deadlines.values()):
+                    entry.inactive_since = max(entry.spot_deadlines.values())
+                continue
             active = entry.active_match(now) is not None
             if active != entry.logged_active:
                 self.log_entry("ACTIVE" if active else "INACTIVE", entry, now)
@@ -1079,7 +1357,7 @@ class Monitor:
             match = entry.active_match(now)
             if match and not entry.archived:
                 active.append((entry, match))
-            elif match or (entry.inactive_since is not None
+            elif match or (entry.awaiting_source and entry.inactive_since is None) or (entry.inactive_since is not None
                            and 0 <= now - entry.inactive_since <= self.args.history_max_age):
                 history.append((entry, match or entry.match))
         active.sort(key=lambda row: -row[0].rank)
@@ -1116,6 +1394,8 @@ def reference_label(match: Match, name_length: int | None) -> str:
             labels.append(f"{park} ({name})")
         else:
             labels.append(park)
+        if match.reference_qths.get(park):
+            labels[-1] += f" [{match.reference_qths[park]}]"
     return ", ".join(labels)
 
 
@@ -1124,7 +1404,7 @@ def row_values(entry: Entry, match: Match, now: float, history: bool = False,
                distance_unit: str = "km") -> list[str]:
     marker = ("UPD" if now < entry.updated_until else
               ("BND" if entry.previous_bands else ">>>") if not history and now < entry.new_until else "")
-    status = "ACTIVE" if entry.active_match(now) else "INACTIVE"
+    status = "UNKNOWN" if entry.awaiting_source else "ACTIVE" if entry.active_match(now) else "INACTIVE"
     keywords = []
     if 0 <= now - entry.created_at < 60 and now < entry.new_until:
         keywords.append("NEW")
@@ -1132,27 +1412,35 @@ def row_values(entry: Entry, match: Match, now: float, history: bool = False,
         keywords.append("BND")
     if now < entry.updated_until:
         keywords.append("UPD")
+    if entry.restored:
+        keywords.append("RESTORED")
     comment = " ".join([status] + keywords)
     description = update_description(entry, match, now)
     if description:
         comment += " | " + description
+    reception = latest_reception(match)
+    rbn_frequency = (f"{reception.frequency:.1f}" if reception else "—")
+    if match.receptions and all(r.time is None for r in match.receptions):
+        rbn_frequency = " / ".join(dict.fromkeys(f"{r.frequency:.1f}" for r in match.receptions))
     return [marker, match.call,
             reference_label(match, park_name_length), f"{match.frequency:.1f}",
-            " / ".join(s.receiver for s in match.receptions),
-            " / ".join(str(s.snr) for s in match.receptions),
-            " / ".join(str(s.wpm) for s in match.receptions),
-            " / ".join(age_text(now - s.time) for s in match.receptions),
-            f"{max(match.receptions, key=lambda s: s.time).frequency:.1f}",
+            " / ".join(s.receiver for s in match.receptions) or "—",
+            " / ".join(str(s.snr) for s in match.receptions) or "—",
+            " / ".join(str(s.wpm) for s in match.receptions) or "—",
+            " / ".join(age_text(now - s.time) if s.time is not None else "—" for s in match.receptions) or "—",
+            rbn_frequency,
             band_for(match.frequency), status, comment,
-            age_text(now - entry.created_at), age_text(now - entry.spot_time),
-            distance_text(qth, match.location, distance_unit), match.program]
+            age_text(now - entry.created_at) if entry.first_seen_known else "—", age_text(now - entry.spot_time),
+            distance_text(qth, match.location, distance_unit), match.program,
+            azimuth_text(qth, match.location)]
 
 
 HEADERS = ["", "Activator", "Reference", "Spot kHz", "Receiver", "SNR dB", "WPM", "RBN age", "RBN kHz", "Band", "Status", "Comment",
-           "First seen", "Last spot", "Distance", "Program"]
-TABLE_FIELDS = (15, 1, 9, 3, 8, 2, 4, 5, 6, 12, 13, 7, 14, 11)
-NUMERIC_FIELDS = frozenset((3, 5, 6, 7, 8, 12, 13, 14))
-COMMENT_LEGEND = "NEW=new entry BND=new band UPD=kHz change | spot status: ACTIVE/INACTIVE"
+           "First seen", "Last spot", "Distance", "Program", "Azimuth"]
+TABLE_FIELDS = (15, 1, 9, 3, 8, 2, 4, 5, 6, 12, 13, 7, 14, 16, 11)
+NUMERIC_FIELDS = frozenset((3, 5, 6, 7, 8, 12, 13, 14, 16))
+COMMENT_LEGEND = ("NEW=new entry BND=new band UPD=kHz change RESTORED=from log | "
+                  "status: ACTIVE/INACTIVE/UNKNOWN (awaiting source)")
 
 
 def comment_legend(width: int) -> str:
@@ -1261,7 +1549,7 @@ class ColumnLayout:
 
         # Nowe liczniki przechodzą pod wpis, gdy zabraknie miejsca w tabeli.
         # Zachowaj oba źródła częstotliwości, pasmo i pełny wiek odbiorów.
-        for optional in (14, 12, 13, 2, 6, 5, 4):
+        for optional in (16, 14, 12, 13, 2, 6, 5, 4):
             if used() <= budget:
                 break
             fields.remove(optional)
@@ -1311,6 +1599,15 @@ def reports(state: Monitor) -> list[str]:
         result.append("LOG ERROR: " + state.log.error)
     if state.summary and state.summary.error:
         result.append("SUMMARY ERROR: " + state.summary.error)
+    warning = state.qth_warning()
+    if warning:
+        result.append(warning)
+    if state.restore_count and time.monotonic() < state.qth_warning_until:
+        pending = sum(entry.awaiting_source for entry in state.entries.values())
+        result.append(f"RESTORED: {state.restore_count} entries from saved logs (HISTORY)."
+                      + (f" Awaiting source data: {pending}." if pending else ""))
+    if state.restore_skipped:
+        result.append(f"WARNING: skipped {state.restore_skipped} invalid event log records during restore")
     return result + ["WARNING: " + clean(w) for w in state.warnings]
 
 
@@ -1337,7 +1634,7 @@ def update_description(entry: Entry, match: Match, now: float) -> str:
     if 3 in entry.updated_fields and entry.previous_frequency is not None:
         fields.append(f"Spot {entry.previous_frequency:.1f} → {match.frequency:.1f} kHz")
     if 8 in entry.updated_fields and entry.previous_rbn_frequency is not None:
-        freq = max(match.receptions, key=lambda r: r.time).frequency
+        freq = latest_reception(match).frequency
         fields.append(f"RBN {entry.previous_rbn_frequency:.1f} → {freq:.1f} kHz")
     return ", ".join(fields)
 
@@ -1404,6 +1701,7 @@ def render(state: Monitor, now: float) -> str:
     lines.append("First seen: time since detection; Last spot: age of the latest program report.")
     lines.append(f"Distance: great-circle distance from QTH {args.qth_label} to the reference location ({args.distance_unit})."
                  if args.qth is not None else "Distance: set --qth or CW_ACTIVATION_QTH to use your home location.")
+    lines.append("Azimuth: initial bearing from QTH, clockwise from true north (000° N, 090° E).")
     lines.append("SNR, WPM and RBN age follow receiver order. ACTIVE entries may also appear in history.")
     return "\n".join(lines)
 
@@ -1412,10 +1710,12 @@ def screen_frame(state: Monitor, now: float, height: int, width: int) -> list[tu
     """Szerokości dopasowane do danych i pierwszeństwo najnowszych wpisów."""
     active, history = state.rows(now)
     args = state.args
+    notices = reports(state)
     state.column_layout.resize((height, width))
     if height < 8 or width < 40:
         lines = [("CW → RBN — enlarge terminal (min. 40×8)", "title"),
-                 (new_banner(active, now), "banner"), (source_status(state), "error" if state.error else "normal")]
+                 (notices[0] if notices else source_status(state), "error" if notices else "normal"),
+                 (new_banner(active, now), "banner")]
         return lines[:height]
     updated = (datetime.fromtimestamp(state.updated_at, UTC).strftime("%H:%M:%S UTC")
                if state.updated_at is not None else "waiting")
@@ -1424,13 +1724,13 @@ def screen_frame(state: Monitor, now: float, height: int, width: int) -> list[tu
         footer.append((f"{limits_text(args)} | RBN start ≤ {args.rbn_max_age:g}s | history ≤ {args.history_max_age:g}s | ±{args.tolerance:g} kHz", "muted"))
     if height >= 14 and state.rbn_status:
         footer.append((state.rbn_status, "muted"))
-    footer.append((comment_legend(width), "muted"))
+    if height >= 10 or not notices:
+        footer.append((comment_legend(width), "muted"))
     table_bottom = height - len(footer) - 1  # Ostatni wiersz: ukryte wpisy i klawisze.
     lines = [("/".join(args.programs) + " CW → RBN | " + ", ".join(args.spotters)
               + f" | QTH: {args.qth_label}", "title"),
              (new_banner(active, now), "banner" if any(now < e.new_until for e, _ in active) else "muted")]
     # Raporty mają pierwszeństwo, lecz nawet ich nadmiar nie zasłania całej tabeli.
-    notices = reports(state)
     max_reports = max(1, height - 9)
     lines.extend((text, "error") for text in notices[:max_reports])
     if len(notices) > max_reports:
@@ -1502,29 +1802,33 @@ def screen_frame(state: Monitor, now: float, height: int, width: int) -> list[tu
                 if len(lines) < table_bottom:
                     lines.append((" " * comment_start + continuation, "muted"))
             details = []
+            detail_style = "history" if historical else "muted"
             if not age_in_table:
-                details.append("RBN age: " + values[7].replace(" / ", "/"))
+                details.append(("RBN age: " + values[7].replace(" / ", "/"), detail_style))
             if not comment_in_table:
-                details.extend(textwrap.wrap("Comment: " + full_comment, width=max(1, width - 5),
-                                             break_on_hyphens=False))
+                details.extend((text, detail_style) for text in textwrap.wrap(
+                    "Comment: " + full_comment, width=max(1, width - 5), break_on_hyphens=False))
             if separate_name:
-                details.extend(wrap_cells(park_details, max(2, width - 5)))
+                details.extend((text, style) for text in wrap_cells(park_details, max(2, width - 5)))
             measurements = [HEADERS[field] + ": " + values[field].replace(" / ", "/")
                             for field in (4, 5, 6) if not any(i == field for i, _ in columns)]
             if measurements:
-                details.extend(wrap_cells(" | ".join(measurements), max(2, width - 5)))
-            age_details = [HEADERS[field] + ": " + values[field] for field in (12, 13, 14)
+                details.extend((text, detail_style) for text in wrap_cells(" | ".join(measurements), max(2, width - 5)))
+            age_details = [HEADERS[field] + ": " + values[field] for field in (12, 13, 14, 16)
                            if not any(i == field for i, _ in columns)]
-            if age_details:
-                combined = " | ".join(age_details)
-                if cell_width(combined) <= width - 5:
-                    details.append(combined)
+            packed = ""
+            for detail in age_details:
+                combined = packed + " | " + detail if packed else detail
+                if packed and cell_width(combined) > width - 5:
+                    details.extend((text, detail_style) for text in wrap_cells(packed, max(2, width - 5)))
+                    packed = detail
                 else:
-                    for detail in age_details:
-                        details.extend(wrap_cells(detail, max(2, width - 5)))
-            for detail in details:
+                    packed = combined
+            if packed:
+                details.extend((text, detail_style) for text in wrap_cells(packed, max(2, width - 5)))
+            for detail, line_style in details:
                 if len(lines) < table_bottom:
-                    lines.append(("    " + detail, "history" if historical else "muted"))
+                    lines.append(("    " + detail, line_style))
             count += 1
         if historical:
             shown_history = count
@@ -1633,6 +1937,13 @@ def arguments(argv: list[str] | None = None) -> argparse.Namespace:
 
 def run_plain(args: argparse.Namespace) -> int:
     poller, state = Poller(args), Monitor(args)
+    warning = state.qth_warning()
+    if state.restore_count or state.restore_skipped:
+        print(render(state, time.time()), flush=True)
+        state.qth_warning_until = 0
+    elif warning:
+        print(warning, flush=True)  # Show before the first network request.
+        state.qth_warning_until = 0  # Append-only output needs only one startup notice.
     interactive = sys.stdout.isatty()
     while True:
         started = time.monotonic()
