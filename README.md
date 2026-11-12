@@ -27,13 +27,22 @@ language supplied by their source.
 
 ## Running
 
-Clone the repository and keep `pota_alert.py` and `terminal_display.py` together:
+All Python sources and tests are in `python/`. Run the commands below from
+that directory; relative CSV and SOTA file paths are resolved from your current
+working directory. Keep the `cw_monitor/` package alongside `pota_alert.py`:
 
 ```bash
 git clone https://github.com/rafal-dot-ai/cw-activation-monitor.git
-cd cw-activation-monitor
+cd cw-activation-monitor/python
 python3 pota_alert.py --demo --qth JO91AA
 ```
+
+For an existing checkout, enter `python` with `cd python` from the repository
+root. Local CSV logs and their `.csv-backups/` directory belong alongside the
+scripts in `python/`; keep their filenames when restarting to restore history.
+The directory name is lowercase, including on Linux. You can also launch the
+same CLI with `python3 -m cw_monitor` from `python/`, or run
+`python3 python/pota_alert.py` from the repository root.
 
 For live POTA/WWFF monitoring, supply your own QTH when you want distances:
 
@@ -169,8 +178,11 @@ supplied as live spots. Deprecated API placeholder responses are rejected.
 
 The first column is **Program**, with `POTA`, `SOTA` or `WWFF`. Column order:
 
-**Program → Activator → Band → Spot kHz → RBN kHz → Reference → Receiver →
-dB → WPM → First seen → Last spot → RBN age → Distance → Azimuth → Comment**.
+**Program → Activator → Band → Spot kHz → RBN kHz → dB → WPM → Reference →
+Receiver → First seen → Last spot → RBN age → Distance → Azimuth → Comment**.
+
+Plain text labels the same dB column **SNR dB**. SNR, WPM and RBN age retain
+the selected receiver order; moving columns does not reorder their values.
 
 Reference means a POTA park, SOTA summit or WWFF area. The field includes the
 reference's name in parentheses when available. The former POTA-specific
@@ -214,9 +226,10 @@ even if an earlier spot had better SNR.
 | **Last spot** | Age of the latest report from this row's program, using its original source timestamp. Re-fetching does not reset it. |
 | **RBN age** | Age of the stored reception, separately for each receiver. Cached confirmation never refreshes its timestamp. |
 
-Ages use **minutes:seconds**, such as `12:34/08:07`. Minutes do not wrap after
-an hour: one hour is `60:00`. Counters update locally between requests and in
-history. In narrow terminals, age columns may move below their entry.
+Ages use **HH:MM:SS**, such as `00:12:34/00:08:07`. One hour is `01:00:00`;
+elapsed hours continue past 24 without resetting. Counters update locally
+between requests and in history. In narrow terminals, age columns may move
+below their entry.
 
 ## Distance, azimuth and reference names
 
@@ -291,10 +304,38 @@ Plain text snapshots retain ASCII separators and numeric alignment.
 
 In the full-screen terminal, **Band** values use stable foreground colours.
 Terminals with 256 colours distinguish individual bands; basic colour
-terminals use a smaller palette. Program labels keep their usual style.
-NEW row highlights and UPD cell highlights take priority over band colours,
-and inactive history remains dimmed. Monochrome terminals and plain text
-snapshots keep their existing presentation. Band colours do not affect CSV
+terminals use a smaller palette. **Program** values use yellow for POTA,
+green for WWFF and blue for SOTA.
+
+Each receiver's **SNR dB** and **WPM** value has its own foreground colour:
+
+| Field | Green | Yellow | Red |
+|---|---|---|---|
+| SNR dB | 20 or more | 10–19 | Below 10 |
+| WPM | Up to 15 | 16–24 | 25 or more |
+
+SNR is signal-to-noise ratio at that receiver, rather than absolute signal
+power. These are display thresholds, not a guarantee of reception quality.
+WPM colours express a configurable speed preference. Receiver order and row
+sorting stay unchanged.
+
+```bash
+python3 pota_alert.py --wpm-thresholds 15,24 --snr-thresholds 10,20
+python3 pota_alert.py --wpm-thresholds 12,20
+python3 pota_alert.py --color never
+python3 pota_alert.py --demo --color always
+```
+
+`--color auto` is the default: enable colours for an interactive colour
+terminal, with no ANSI escapes in redirected output. It respects `NO_COLOR`
+and `TERM=dumb`. `--color always` also colours plain snapshots using ANSI;
+`--color never` disables all colours, including bands. Monochrome curses
+still uses bold, reverse video and underlines to distinguish alerts.
+
+NEW row highlights and UPD cell highlights take priority over column colours,
+and inactive history remains dimmed. Narrow layouts retain SNR/WPM colours in
+the measurement details below the row. Limited terminal palettes use
+available colours. Colour settings do not affect CSV
 contents or cause full-screen redraws.
 
 New confirmations appear in a **NEW ACTIVATION / NEW ACTIVATIONS** banner at
@@ -357,7 +398,9 @@ inactive entry becomes hidden, preventing duplicate alerts on its return.
 
 The **`HTTPS in 00:47`** countdown updates locally every second. During a
 request it shows **`HTTPS: fetching…`**. Ages, deadlines and highlights update
-between requests, even while a fetch is slow. The screen does not clear each
+between requests, even while a fetch is slow. The frame is rebuilt once per
+second and immediately after data updates, acknowledgements or resizing.
+Keyboard input is checked every 200 ms. The screen does not clear each
 minute; only changed cells are repainted. `--once`, `--demo` and `--no-clear`
 use full snapshots. `--links` adds program reference and RBN links, as space
 permits in curses mode.
@@ -412,17 +455,36 @@ and program spot age limits and cached confirmation lifetimes are unchanged.
   rounded up to an available row limit.
 - Growth is immediate. Shrinking requires **three complete quieter samples**
   and proceeds one level at a time. Repeated IDs do not inflate the average.
-- A truncated response is only a lower bound on traffic. It does not train
-  the average, clear remembered peaks or advance the complete-read timestamp.
+- A truncated response on its own is only a lower bound on traffic. It does
+  not train the average, clear remembered peaks or advance the complete-read timestamp.
   HTTP errors likewise preserve the timestamp. Recovery covers the relevant
   gap within the configured freshness window, and expired cached spots are
   removed.
+
+When the **100 newest spots do not reach back one minute**, RBN polling
+automatically speeds up. The default **60 s → 30 s → 15 s** schedule reserves
+headroom based on the time span of the returned spots; a burst can move
+directly to 15 seconds. This is the minimum interval. POTA, WWFF and the local
+SOTA file keep their configured `--interval` schedule, normally 60 seconds.
+RBN-only cycles reuse source data with their original report timestamps.
+
+Overlapping fast reads accumulate in the cache. An earlier gap remains
+reported until the relevant freshness window is fully covered or the missing
+period has expired. Faster polling cannot retrieve spots already hidden
+behind the 100-row limit. Targeted smaller batches remain available.
+
+After **six complete quieter reads**, and only if the average/peak estimate
+fits the next interval with overlap, RBN slows down one step at a time toward
+`--interval`. Selected receiver/age profiles remember their own pacing.
+Without unconfirmed activations, no RBN requests are made. `Retry-After`
+pauses RBN without delaying the program sources.
 
 If **100 rows still do not cover the window**, the monitor displays an
 **incomplete stream** warning. It continues displaying valid data, but
 qualifying matches may be missing. Press **b** in curses mode to allow
 targeted batches split by callsign and receiver. That choice lasts for the
 run; batches are used when needed, while a complete stream can still be used.
+The footer shows **b: batches ON** after enabling them.
 The global stream watermark is not advanced merely because targeted
 batches succeeded. A single callsign/receiver pair can itself exceed 100;
 that remaining limitation is reported explicitly.
@@ -434,8 +496,8 @@ python3 pota_alert.py --rbn-small-batches
 python3 pota_alert.py --once --rbn-small-batches
 ```
 
-The footer shows mode, used → next row limit, average and peak rates, for
-example `RBN stream: rows 20→20 | avg 8.0/min | peak 10.0/min`. A dash means
+The footer shows mode, RBN polling interval, used → next row limit, average
+and peak rates, for example `RBN stream: every 30s | rows 100→100 | avg 80.0/min | peak 95.0/min`. A dash means
 no complete measurement yet. Short terminals may omit this extra status
 line; plain snapshots include it. Increasing the limit can require several
 requests with repeated rows, so adaptive fetching primarily controls payload
@@ -470,7 +532,9 @@ program report time. Multiple receivers use `/` in matching order.
 The log preserves timestamps rather than saving a constantly changing
 age. Standard CSV quoting handles commas and quotes; CSV can be read by
 spreadsheets or processed from the terminal. The log is flushed after each
-record and shared safely between terminal and polling threads.
+record and shared safely between terminal and polling threads. A sidecar
+lock, e.g. `.events.csv.lock`, prevents another monitor process from opening
+the same event log for writing. Locks are acquired before schema upgrades.
 
 **debug** adds source read counts/errors, `RBN_QUERY` request limits and
 returned counts, `RBN_FETCH` adaptive status, and `RBN_REJECT` explanations
@@ -485,7 +549,10 @@ Existing logs use the current header. The preceding schema without `qth` is
 upgraded automatically, adding an empty column and preserving the original
 file in `.csv-backups/`. Other headers or inaccessible files fail clearly at
 startup. A write failure during operation is reported above the table and leaves
-monitoring running. The file's parent directory must already exist.
+monitoring running. Errors still present when closing the logs are also
+printed to standard error and cause exit code **2**. The file's parent
+directory must already exist. Both CSV readers accept UTF-8 with or without
+a byte-order mark (BOM).
 On restart, saved activation events restore recent terminal history as
 described below.
 
@@ -601,7 +668,7 @@ python3 pota_alert.py --help
 | `--sota-max-age SECONDS` | 600 | Maximum SOTA report age |
 | `--wwff-max-age SECONDS` | 900 | Maximum WWFF report age |
 | `--spotters CALL [CALL ...]` | SP5GQ SQ5J | Either receiver is sufficient |
-| `--interval SECONDS` | 60 | Polling interval, minimum 60 s |
+| `--interval SECONDS` | 60 | Program source interval, minimum 60 s; RBN adapts down to 15 s |
 | `--rbn-max-age SECONDS` | 300 | Maximum initial RBN reception age |
 | `--history-max-age SECONDS` | 1800 | Inactive history retention after the program's deadline/stop |
 | `--new-max-age SECONDS` | 300 | Duration in ACTIVE / NEW |
@@ -609,6 +676,9 @@ python3 pota_alert.py --help
 | `--reference-name-length CHARS` | full name | Name limit; 0 hides names; alias `--park-name-length` |
 | `--qth LOCATOR` or `--qth=LAT,LON` | CW_ACTIVATION_QTH, otherwise unset | Home position for distance calculations; CLI overrides environment |
 | `--distance-unit {km,mi}` | km | Kilometres or statute miles |
+| `--color {auto,always,never}` | auto | Colour policy; never disables band, program and signal colours |
+| `--snr-thresholds LOW,HIGH` | 10,20 | SNR below LOW red, below HIGH yellow, otherwise green |
+| `--wpm-thresholds SLOW,MEDIUM` | 15,24 | WPM up to SLOW green, up to MEDIUM yellow, otherwise red |
 | `--tolerance KHZ` | 0.5 | Initial frequency matching tolerance |
 | `--timeout SECONDS` | 20 | Timeout per HTTPS request |
 | `--rbn-small-batches` | off | Allow targeted batches if the adaptive receiver stream is incomplete |
@@ -621,8 +691,9 @@ python3 pota_alert.py --help
 | `--once` | off | One cycle, exit code 1 on source failure |
 | `--demo` | off | Offline fictional examples, all three programs by default |
 
-The interval is measured between cycle starts when requests finish within it.
-The snapshot is dated after fetching and ages are checked again for display.
+The source interval is measured between source-cycle starts when requests
+finish within it. The countdown tracks the next source or RBN cycle.
+Snapshots are dated after fetching and ages are checked again for display.
 Keep the system clock correct.
 
 ## Sources and portability
@@ -637,10 +708,15 @@ Keep the system clock correct.
 To use another computer, clone this repository, download a ZIP from
 [Releases](https://github.com/rafal-dot-ai/cw-activation-monitor/releases), or copy:
 
-- `pota_alert.py`
-- `terminal_display.py`
+- `python/pota_alert.py`
+- the entire `python/cw_monitor/` directory, including its subdirectories
 - `README.md`
 - `LICENSE`
+
+Preserve the `python/` subdirectory when copying files or extracting a ZIP.
+The entry script imports the package; copying only `pota_alert.py` is no
+longer sufficient. To restore your own history, also copy your CSV files
+separately; archives do not include personal logs.
 
 If SOTA is enabled, also copy your own JSON feed or configure its new local
 path. That personal feed is not included in the ZIP. The offline demo needs
@@ -648,13 +724,23 @@ no extra file and never accesses any network source.
 
 ## Tests
 
+From the repository root:
+
 ```bash
+cd python
 python3 -m unittest discover -s tests -v
 ```
 
 GitHub Actions runs the offline tests and demo on Linux with Python 3.10,
 3.12 and 3.14. Tests use controlled data and do not call live radio services.
 The demo smoke test writes both the event log and daily summary.
+
+## Code layout
+
+The entry script delegates to the `cw_monitor` package. Source clients,
+activation state, CSV persistence and terminal presentation have separate
+modules. See [Architecture and review notes](docs/architecture.md) for the
+module map, reliability fixes and performance considerations.
 
 ## License
 

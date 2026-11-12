@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+*.csv
+.*.lock
+.*.tmp
+*.log
+*.zip
+.env
+.env.*
+.DS_Store
+.agents/
+.aws/
+.codex/

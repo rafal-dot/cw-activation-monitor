@@ -1,0 +1,1 @@
+"""CW activation monitor components."""

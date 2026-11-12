@@ -1,4 +1,4 @@
-"""Przyrostowe rysowanie w curses; bez czyszczenia ekranu podczas pobierania."""
+"""Incremental curses drawing without clearing the screen on each fetch."""
 
 import curses
 import unicodedata
@@ -28,7 +28,7 @@ BAND_COLORS = {
 
 
 def fit_cells(text: str, width: int) -> str:
-    """Przytnij i dopełnij wiersz także dla znaków szerszych niż jedna komórka."""
+    """Clip and pad a row, accounting for wide and combining characters."""
     result, used = [], 0
     for char in text:
         if unicodedata.category(char).startswith("C"):
@@ -42,10 +42,11 @@ def fit_cells(text: str, width: int) -> str:
 
 
 class CursesDisplay:
-    def __init__(self, screen):
+    def __init__(self, screen, colors: bool = True):
         self.screen = screen
-        self.previous: list[tuple[str, str, tuple, tuple, tuple]] = []
+        self.previous: list[tuple[str, str, tuple, tuple, tuple, tuple]] = []
         self.band_attributes: dict[str, int] = {}
+        self.value_attributes: dict[str, int] = {}
         self.size = None
         self.attributes = {"normal": 0, "title": curses.A_BOLD,
                            "banner": curses.A_REVERSE | curses.A_BOLD,
@@ -60,9 +61,9 @@ class CursesDisplay:
             curses.curs_set(0)
         except curses.error:
             pass
-        if curses.has_colors():
+        if colors and curses.has_colors():
             curses.start_color()
-            # Użyj jawnego tła: działa również bez rozszerzenia default_colors.
+            # Explicit backgrounds also work without the default_colors extension.
             for number, foreground, background in ((1, curses.COLOR_BLACK, curses.COLOR_YELLOW),
                                                     (2, curses.COLOR_CYAN, curses.COLOR_BLACK),
                                                     (3, curses.COLOR_RED, curses.COLOR_BLACK),
@@ -70,8 +71,7 @@ class CursesDisplay:
                                                     (5, curses.COLOR_WHITE, curses.COLOR_BLACK)):
                 curses.init_pair(number, foreground, background)
             self.attributes["title"] |= curses.color_pair(2)
-            # Nie używaj A_BOLD z czarnym tekstem na jasnym tle: motyw terminala
-            # może mapować pogrubioną czerń na jasną szarość lub biel.
+            # Bold black text can map to grey/white in terminal themes.
             self.attributes["banner"] = curses.color_pair(1)
             self.attributes["new"] = curses.color_pair(1)
             self.attributes["error"] |= curses.color_pair(3)
@@ -83,7 +83,8 @@ class CursesDisplay:
     def init_band_colors(self) -> None:
         colors = getattr(curses, "COLORS", 8)
         limit = getattr(curses, "COLOR_PAIRS", 8)
-        pairs = {curses.COLOR_CYAN: curses.color_pair(2), curses.COLOR_WHITE: curses.color_pair(5)}
+        pairs = {curses.COLOR_CYAN: curses.color_pair(2), curses.COLOR_WHITE: curses.color_pair(5),
+                 curses.COLOR_RED: curses.color_pair(3)}
         next_pair = 6
 
         def foreground(color):
@@ -100,8 +101,17 @@ class CursesDisplay:
             next_pair += 1
             return pairs[color]
 
-        for color in (curses.COLOR_GREEN, curses.COLOR_YELLOW, curses.COLOR_MAGENTA):
+        for color in (curses.COLOR_GREEN, curses.COLOR_YELLOW, curses.COLOR_BLUE, curses.COLOR_MAGENTA):
             foreground(color)
+        for name, preferred, fallback in (("red", 203, curses.COLOR_RED), ("yellow", 228, curses.COLOR_YELLOW),
+                                           ("green", 84, curses.COLOR_GREEN), ("blue", 117, curses.COLOR_BLUE)):
+            attribute = foreground(preferred) if colors >= 256 else None
+            if attribute is None:
+                attribute = pairs.get(fallback, pairs[curses.COLOR_CYAN]
+                                                if name == "blue" else pairs[curses.COLOR_WHITE])
+                if name == "blue":
+                    attribute |= curses.A_BOLD  # Keep blue legible on a black background.
+            self.value_attributes[name] = attribute
         for band, (preferred, fallback) in BAND_COLORS.items():
             attribute = foreground(preferred) if colors >= 256 else None
             if attribute is None:
@@ -113,20 +123,27 @@ class CursesDisplay:
         if self.size != (height, width):
             self.previous = []
             if self.size is not None:
-                self.screen.erase()  # Pełne przerysowanie potrzebne tylko po zmianie rozmiaru.
+                self.screen.erase()  # Only resize requires a complete redraw.
             self.size = height, width
-        # Ostatnia kolumna pozostaje wolna, aby nie zawijać wiersza terminala.
+        # Leave the last column free to avoid automatic terminal wrapping.
         frame = [(fit_cells(text, max(0, width - 1)), style, getattr(text, "highlights", ()),
-                  getattr(text, "separators", ()), getattr(text, "band_spans", ()))
+                  getattr(text, "separators", ()), getattr(text, "band_spans", ()),
+                  getattr(text, "color_spans", ()))
                  for text, style in lines[:height]]
-        frame += [(" " * max(0, width - 1), "normal", (), (), ())] * (height - len(frame))
+        frame += [(" " * max(0, width - 1), "normal", (), (), (), ())] * (height - len(frame))
 
-        def attributes(text, style, highlights, separators, band_spans):
+        def attributes(text, style, highlights, separators, band_spans, color_spans):
             result = [self.attributes.get(style, 0)] * len(text)
             if style in ("normal", "history"):
                 for begin, end, band in band_spans:
                     if band in self.band_attributes:
                         attribute = self.attributes.get(style, 0) | self.band_attributes[band]
+                        for index in range(max(0, begin), min(len(text), end)):
+                            result[index] = attribute
+            if style in ("normal", "history", "muted"):
+                for begin, end, color in color_spans:
+                    if color in self.value_attributes:
+                        attribute = self.attributes.get(style, 0) | self.value_attributes[color]
                         for index in range(max(0, begin), min(len(text), end)):
                             result[index] = attribute
             for begin, end in separators:
@@ -142,14 +159,13 @@ class CursesDisplay:
                        2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
 
         changed = False
-        for row, (text, style, highlights, separators, band_spans) in enumerate(frame):
+        for row, (text, style, highlights, separators, band_spans, color_spans) in enumerate(frame):
             previous = self.previous[row] if row < len(self.previous) else None
-            if previous == (text, style, highlights, separators, band_spans):
+            if previous == (text, style, highlights, separators, band_spans, color_spans):
                 continue
-            attrs = attributes(text, style, highlights, separators, band_spans)
+            attrs = attributes(text, style, highlights, separators, band_spans, color_spans)
             start, end = 0, len(text)
-            # Zmieniaj pojedyncze pola; styl wiersza zmienia się tylko przy nowym
-            # wpisie, przejściu do historii albo zmianie komunikatu statusu.
+            # Repaint changed cells; row styling changes only on lifecycle events.
             if previous and all(not unicodedata.combining(c) and unicodedata.east_asian_width(c) not in "WF"
                                 for c in text + previous[0]):
                 old = previous[0]
@@ -170,7 +186,7 @@ class CursesDisplay:
                         self.screen.addstr(row, column(text[:position]), text[position:stop], attrs[position])
                         position = stop
                 except curses.error:
-                    # Terminal może zostać zmniejszony pomiędzy getmaxyx i addstr.
+                    # The terminal can shrink between getmaxyx and addstr.
                     self.previous, self.size = [], None
                     return
                 changed = True
