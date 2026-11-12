@@ -48,7 +48,7 @@ class EventLogTests(unittest.TestCase):
         self.assertEqual([r["event"] for r in rows], ["NEW"])
         row = rows[0]
         self.assertEqual(list(row), ["timestamp_utc", "source_time_utc", "event", "program",
-                                     "callsign", "reference", "qth", "band", "spot_khz", "rbn_khz", "receivers",
+                                     "callsign", "reference", "qth", "band", "spot_khz", "rbn_khz", "spotters",
                                      "snr_db", "wpm", "detail"])
         self.assertEqual(row["timestamp_utc"], event_storage.EventLog.utc(NOW))
         self.assertEqual(row["program"], "POTA")
@@ -56,7 +56,7 @@ class EventLogTests(unittest.TestCase):
         self.assertEqual(row["qth"], "JN34PX")
         self.assertEqual(row["band"], "20m")
         self.assertEqual(row["source_time_utc"], event_storage.EventLog.utc(NOW - 80))
-        self.assertEqual(row["receivers"], "SP5GQ")
+        self.assertEqual(row["spotters"], "SP5GQ")
         self.assertEqual(row["spot_khz"], "14052.9")
         self.assertEqual(row["rbn_khz"], "14052.9")
         self.assertEqual(row["snr_db"], "18")

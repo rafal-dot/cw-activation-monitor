@@ -27,7 +27,7 @@ def startup_entries(args: argparse.Namespace) -> tuple[dict[tuple, Entry], int]:
                 if None in raw or any(value is None for value in raw.values()):
                     raise ValueError("wrong column count")
                 event = raw["event"]
-                if event not in {"NEW", "BAND", "UPDATE", "HISTORY", "INACTIVE", "ACTIVE"}:
+                if event not in {"NEW", "BAND", "UPDATE", "HISTORY", "INACTIVE", "ACTIVE", "ALERT", "FILTER_ACK"}:
                     continue
                 program, call = raw["program"], raw["callsign"]
                 if program not in PROGRAMS:
@@ -52,13 +52,13 @@ def startup_entries(args: argparse.Namespace) -> tuple[dict[tuple, Entry], int]:
                     if qth:
                         locator_coordinates(qth)
                 columns = [raw[name].split("/") if raw[name] else []
-                           for name in ("receivers", "rbn_khz", "snr_db", "wpm")]
+                           for name in ("spotters", "rbn_khz", "snr_db", "wpm")]
                 if len({len(values) for values in columns}) != 1:
-                    raise ValueError("mismatched receiver fields")
+                    raise ValueError("mismatched spotter fields")
                 receptions = []
                 for receiver, rbn_freq, snr, wpm in zip(*columns):
                     if not CALL_PATTERN.fullmatch(receiver):
-                        raise ValueError("invalid receiver")
+                        raise ValueError("invalid spotter")
                     reception = RbnSpot(call, receiver, frequency(rbn_freq), None, int(snr), int(wpm))
                     if receiver in args.spotters:
                         receptions.append(reception)
@@ -83,10 +83,14 @@ def startup_entries(args: argparse.Namespace) -> tuple[dict[tuple, Entry], int]:
                         if source_time >= entry.spot_time:
                             entry.match, entry.spot_time = match, source_time
                             entry.spot_deadlines = {reference: source_time + max_spot_age(args, program)}
+                    if event in {"ALERT", "FILTER_ACK"}:
+                        entry.alerted = True
+                    elif "snr-filter=pending" in raw["detail"]:
+                        entry.alerted = False
                     if event == "INACTIVE":
                         entry.eligible = False
                         entry.inactive_since = min(when, max(entry.spot_deadlines.values()))
-                    elif event in {"NEW", "BAND", "UPDATE", "ACTIVE"}:
+                    elif event in {"NEW", "BAND", "UPDATE", "ACTIVE", "ALERT"}:
                         entry.eligible, entry.inactive_since = True, None
             except (ValueError, TypeError, OverflowError):
                 skipped += 1

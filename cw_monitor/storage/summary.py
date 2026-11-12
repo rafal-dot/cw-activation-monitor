@@ -15,7 +15,7 @@ from ..config import CALL_PATTERN, PROGRAMS, UTC
 from ..geo import locator_coordinates
 from ..models import Match
 from ..values import clean, frequency, station_band, timestamp
-from .files import lock_csv, upgrade_qth_csv
+from .files import lock_csv, upgrade_csv_schema
 
 
 @dataclass
@@ -57,7 +57,7 @@ class DailySummary:
         try:
             if self.path.exists() and self.path.stat().st_size:
                 self._load()
-                upgrade_qth_csv(self.path, self.fields)
+                upgrade_csv_schema(self.path, self.fields)
             else:
                 self._write()
         except BaseException:

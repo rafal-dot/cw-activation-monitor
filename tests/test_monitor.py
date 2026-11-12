@@ -1,6 +1,7 @@
 import contextlib
 import io
 import unittest
+from dataclasses import replace
 from unittest.mock import Mock, patch
 
 from cw_monitor import cli
@@ -62,15 +63,15 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual([len(r) for r in self.state.rows(NOW + 2070)], [0, 1])
         self.assertEqual([len(r) for r in self.state.rows(NOW + 2071)], [0, 0])
 
-    def test_lost_spot_stays_in_history_and_return_updates_status_only(self):
+    def test_missing_spot_stays_active_until_deadline_and_return_does_not_repeat_alert(self):
         data = snapshot()
         self.state.apply(data, NOW)
         self.state.apply(models.Snapshot([], [], [], NOW + 60), NOW + 60)
-        self.assertEqual([len(r) for r in self.state.rows(NOW + 60)], [0, 1])
+        self.assertEqual([len(r) for r in self.state.rows(NOW + 60)], [1, 0])
         self.assertEqual(self.state.apply(data, NOW + 120), [])
         active, history = self.state.rows(NOW + 120)
-        self.assertEqual(active, [])
-        self.assertEqual(table_ui.row_values(*history[0], NOW + 120, history=True)[10], "ACTIVE")
+        self.assertEqual(history, [])
+        self.assertEqual(table_ui.row_values(*active[0], NOW + 120)[10], "ACTIVE")
 
     def test_snr_update_does_not_reorder_existing_rows_or_repeat_alert(self):
         self.state.apply(snapshot(calls=("FIRST",)), NOW)
@@ -110,8 +111,8 @@ class MonitorTests(unittest.TestCase):
         renewed = snapshot(NOW + 240, pota_age=0)
         renewed.rbn = []
         self.assertEqual(self.state.apply(renewed, NOW + 240), [])
-        self.assertEqual([len(r) for r in self.state.rows(NOW + 301)], [0, 1])
-        active = self.state.rows(NOW + 301)[1]
+        self.assertEqual([len(r) for r in self.state.rows(NOW + 301)], [1, 0])
+        active = self.state.rows(NOW + 301)[0]
         self.assertEqual(active[0][1].receptions[0].time, NOW - 299)
         self.assertEqual(table_ui.row_values(*active[0], NOW + 301, history=True)[10], "ACTIVE")
         self.assertEqual([len(r) for r in self.state.rows(NOW + 541)], [0, 1])
@@ -124,7 +125,7 @@ class MonitorTests(unittest.TestCase):
         self.state.apply(snapshot(), NOW)
         changed = models.Snapshot([models.ActivationSpot("IU1PZC", "IT-0760", 14052.9, NOW + 10)], [rbn()], [], NOW + 10)
         self.state.apply(changed, NOW + 10)
-        self.assertEqual([len(r) for r in self.state.rows(NOW + 10)], [1, 1])
+        self.assertEqual([len(r) for r in self.state.rows(NOW + 10)], [2, 0])
         self.assertEqual(len(self.state.entries), 2)
         self.assertEqual(self.state.rows(NOW + 10)[0][0][1].references, ("IT-0760",))
 
@@ -207,7 +208,9 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(table_ui.reference_label(match, 0), "IT-0759")
         self.assertIn("IT-0759 (", views_ui.render(self.state, NOW))
         self.state.apply(models.Snapshot([], [], [], NOW + 10), NOW + 10)
-        self.assertEqual(table_ui.reference_label(self.state.rows(NOW + 10)[1][0][1], 12),
+        self.assertEqual(table_ui.reference_label(self.state.rows(NOW + 10)[0][0][1], 12),
+                         "IT-0759 (Parco Natur…)")
+        self.assertEqual(table_ui.reference_label(self.state.rows(NOW + 271)[1][0][1], 12),
                          "IT-0759 (Parco Natur…)")
 
     def test_narrow_terminal_shows_park_name_under_row_and_prioritizes_newest(self):
@@ -316,10 +319,34 @@ class MonitorTests(unittest.TestCase):
         text = next(text for text, _ in rows if is_row(text, "YO5BDL"))
         self.assertIn("SP5GQ/SQ5J", text)
         self.assertTrue(any("SNR dB: 12/9" in line or "12/9" in line for line, _ in rows))
-        self.assertTrue(any("WPM: 21/21" in line or "21/21" in line
-                            for line, _ in rows))
+        item = next(item for item in self.state.rows(NOW)[0] if item[1].call == "YO5BDL")
+        values = dict(zip(table_ui.HEADERS, table_ui.row_values(*item, NOW)))
+        self.assertEqual(values["WPM"], "21")
+        self.assertNotIn("21/21", "\n".join(line for line, _ in rows))
         self.assertIn("00:00:35/00:00:58", text)
         self.assertLess(len(text), 80)
+
+    def test_equal_measurements_collapse_independently_and_mixed_values_keep_order(self):
+        self.state.apply(snapshot(), NOW)
+        entry, match = self.state.rows(NOW)[0][0]
+        cases = [
+            ([(18, 23, 10), (9, 23, 20), (18, 23, 10)],
+             ["18 / 9 / 18", "23", "00:00:10 / 00:00:20 / 00:00:10"]),
+            ([(18, 23, 10), (18, 23, 10), (18, 25, 10)],
+             ["18", "23 / 23 / 25", "00:00:10"]),
+            ([(0, 0, None)] * 5, ["0", "0", "—"]),
+            ([(18, 23, None), (18, 23, 10)], ["18", "23", "— / 00:00:10"]),
+            ([(18, 23, 10)], ["18", "23", "00:00:10"]),
+            ([], ["—", "—", "—"]),
+        ]
+        for readings, expected in cases:
+            with self.subTest(readings=readings):
+                receptions = [models.RbnSpot(match.call, f"N{i}TEST", match.frequency,
+                              NOW - age if age is not None else None, snr, wpm)
+                              for i, (snr, wpm, age) in enumerate(readings)]
+                row = table_ui.row_values(entry, replace(match, receptions=receptions), NOW)
+                self.assertEqual(row[5:8], expected)
+                self.assertEqual(row[4], " / ".join(r.receiver for r in receptions) or "—")
 
     def test_age_format_is_hours_minutes_and_seconds_without_day_wrap(self):
         for seconds, expected in ((-1, "00:00:00"), (0, "00:00:00"), (59.9, "00:00:59"),
@@ -339,15 +366,15 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(values["Last spot"], "00:01:45")
         self.assertEqual(values["RBN age"], "00:01:25")
 
-    def test_pota_update_in_history_changes_only_latest_pota_age(self):
+    def test_old_active_pota_update_changes_only_latest_pota_age(self):
         self.state.apply(snapshot(), NOW)
         later = snapshot(NOW + 310, pota_age=5)
         later.spots[0] = models.ActivationSpot("IU1PZC", "IT-0759", 14053.1, NOW + 305)
         later.rbn = []
         self.state.apply(later, NOW + 310)
-        self.assertEqual(self.state.rows(NOW + 320)[0], [])
+        self.assertEqual(self.state.rows(NOW + 320)[1], [])
         values = dict(zip(table_ui.HEADERS, table_ui.row_values(
-            *self.state.rows(NOW + 320)[1][0], NOW + 320, history=True)))
+            *self.state.rows(NOW + 320)[0][0], NOW + 320, history=True)))
         self.assertEqual(values["First seen"], "00:05:20")
         self.assertEqual(values["Last spot"], "00:00:15")
         self.assertEqual(values["RBN age"], "00:05:30")
@@ -359,7 +386,7 @@ class MonitorTests(unittest.TestCase):
         self.state.apply(snapshot(NOW + 6010, pota_age=0), NOW + 6010)
         self.state.acknowledge(NOW + 6010)
         values = dict(zip(table_ui.HEADERS, table_ui.row_values(
-            *self.state.rows(NOW + 6015)[1][0], NOW + 6015, history=True)))
+            *self.state.rows(NOW + 6015)[0][0], NOW + 6015, history=True)))
         self.assertEqual(values["First seen"], "01:40:15")
         self.assertEqual(values["Last spot"], "00:00:05")
 
@@ -520,13 +547,30 @@ class MonitorTests(unittest.TestCase):
                                (159.9, "00:01"), (160, "00:00"), (162, "00:00")):
             with self.subTest(tick=tick), patch.object(time, "monotonic", return_value=tick):
                 frame = views_ui.screen_frame(self.state, NOW, 24, 80, layout=self.layout)
-            self.assertTrue(any(f"HTTPS in {expected}" in text for text, _ in frame))
+            self.assertTrue(any(f"Refresh in 00:{expected}" in text for text, _ in frame))
 
     def test_refresh_countdown_displays_loading_and_initial_wait(self):
-        self.assertEqual(views_ui.refresh_status(self.state), "HTTPS: waiting…")
+        self.assertEqual(views_ui.refresh_status(self.state), "Refresh: waiting…")
         self.state.next_poll_at = 160
         self.state.loading = True
-        self.assertEqual(views_ui.refresh_status(self.state), "HTTPS: fetching…")
+        self.assertEqual(views_ui.refresh_status(self.state), "Refreshing…")
+
+    def test_active_and_history_share_columns_in_snapshots_and_live_frames(self):
+        old = snapshot(calls=("LONGCALL/P",), pota_age=299)
+        self.state.apply(old, NOW)
+        self.state.apply(snapshot(NOW + 10, calls=("SHORT",)), NOW + 10)
+        self.assertEqual([len(r) for r in self.state.rows(NOW + 10)], [1, 1])
+        self.state.rbn_status = "RBN stream: complete"
+        for output in (views_ui.render(self.state, NOW + 10).splitlines(),
+                       [text for text, _ in views_ui.screen_frame(self.state, NOW + 10, 40, 240)]):
+            rows = [text for text in output if is_row(text, "SHORT") or is_row(text, "LONGCALL/P")]
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0].index("14052.9"), rows[1].index("14052.9"))
+            self.assertEqual(sum(text.startswith("Program") for text in output), 1)
+            refresh = next(i for i, text in enumerate(output) if text.startswith("Refresh:"))
+            self.assertEqual(output[refresh + 1], "RBN stream: complete")
+            self.assertLess(output.index(rows[0]), next(i for i, text in enumerate(output) if text.startswith("HISTORY (1)")))
+            self.assertGreater(output.index(rows[1]), next(i for i, text in enumerate(output) if text.startswith("HISTORY (1)")))
 
 
 class ScheduleTests(unittest.TestCase):

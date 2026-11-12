@@ -12,6 +12,9 @@ from .config import CALL_PATTERN, PROGRAMS
 from .geo import qth_coordinates
 from .runtime import run
 from .storage.session import close_logs, get_log, get_summary
+from .storage.preferences import configure_sort, configure_filter
+from .filtering import SnrFilter
+from .sorting import SORT_FIELDS
 from .values import clean, receiver_call
 
 
@@ -25,10 +28,18 @@ def thresholds(value: str) -> tuple[int, int]:
         raise argparse.ArgumentTypeError("expected two increasing integers, e.g. 15,24") from exc
 
 
+def minimum_snr(value: str) -> int | None:
+    try:
+        number = None if value.lower() == "off" else int(value)
+        return SnrFilter(number).minimum
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("expected integer dB from -100 to 100, or off") from exc
+
+
 def arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--spotters", nargs="+", default=["SP5GQ", "SQ5J"],
-                        help="receiver callsigns (default: SP5GQ SQ5J)")
+                        help="spotter callsigns (default: SP5GQ SQ5J)")
     parser.add_argument("--programs", nargs="+", type=str.upper, choices=PROGRAMS,
                         help="programs to monitor (default: POTA WWFF, plus SOTA with --sota-file)")
     parser.add_argument("--sota-file", type=Path,
@@ -37,6 +48,14 @@ def arguments(argv: list[str] | None = None) -> argparse.Namespace:
                         help="home Maidenhead locator or latitude,longitude (also CW_ACTIVATION_QTH); unset disables distance")
     parser.add_argument("--distance-unit", choices=("km", "mi"), default="km",
                         help="distance units (default: km)")
+    parser.add_argument("--sort", choices=tuple(SORT_FIELDS),
+                        help="sort ACTIVE/HISTORY independently; default: saved choice or last activity")
+    parser.add_argument("--sort-order", choices=("asc", "desc"),
+                        help="sort direction; default with --sort: desc for times, asc for numbers; choice is saved")
+    parser.add_argument("--min-snr", type=minimum_snr, default=argparse.SUPPRESS, metavar="DB|off",
+                        help="minimum SNR from at least one spotter; saved choice, initially off")
+    parser.add_argument("--show-filtered", action=argparse.BooleanOptionalAction, default=None,
+                        help="show below-threshold entries without alerts; choice is saved")
     parser.add_argument("--color", choices=("auto", "always", "never"), default="auto",
                         help="colours: auto for interactive colour terminals, always, or never (default: auto)")
     parser.add_argument("--snr-thresholds", type=thresholds, default=(10, 20), metavar="LOW,HIGH",
@@ -53,7 +72,7 @@ def arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--history-max-age", type=float, default=1800,
                         help="history retention after program spot activity ends, in seconds (1800)")
     parser.add_argument("--new-max-age", type=float, default=300,
-                        help="time a new program/callsign/band/reference stays in ACTIVE / NEW, in seconds (300)")
+                        help="age before recording the legacy HISTORY log event, independent of current activity (300 seconds)")
     parser.add_argument("--highlight-seconds", type=float, default=30,
                         help="new row highlight duration in seconds (30)")
     parser.add_argument("--reference-name-length", "--park-name-length", dest="park_name_length", type=int, default=None,
@@ -61,7 +80,7 @@ def arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--tolerance", type=float, default=0.5, help="frequency tolerance in kHz (0.5)")
     parser.add_argument("--timeout", type=float, default=20, help="timeout for each HTTPS request in seconds")
     parser.add_argument("--rbn-small-batches", action="store_true",
-                        help="allow targeted callsign/receiver batches if the RBN stream exceeds 100 rows")
+                        help="allow targeted callsign/spotter batches if the RBN stream exceeds 100 rows")
     parser.add_argument("--log-file", type=Path, help="append activation events to a UTF-8 CSV file")
     parser.add_argument("--summary-file", type=Path,
                         help="update a daily CSV with full names, first/last source spots and last frequency; reload on restart")
@@ -73,6 +92,10 @@ def arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--bell", action="store_true", help="ring the terminal bell for new confirmations")
     parser.add_argument("--no-clear", action="store_true", help="plain text: keep successive snapshots instead of using curses")
     args = parser.parse_args(argv)
+    args._min_snr_explicit = hasattr(args, "min_snr")
+    args.min_snr = getattr(args, "min_snr", None)
+    args._show_filtered_explicit = args.show_filtered is not None
+    args.show_filtered = bool(args.show_filtered)
     if args.wpm_thresholds[0] < 1:
         parser.error("--wpm-thresholds: expected positive increasing integers")
     if args.log_file is not None and args.summary_file is not None:
@@ -101,7 +124,7 @@ def arguments(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--reference-name-length / --park-name-length must not be negative")
     args.spotters = list(dict.fromkeys(receiver_call(r) for r in args.spotters))
     if not all(CALL_PATTERN.fullmatch(r) for r in args.spotters):
-        parser.error("--spotters: invalid receiver callsign")
+        parser.error("--spotters: invalid spotter callsign")
     return args
 
 
@@ -110,6 +133,8 @@ def main(argv: list[str] | None = None) -> int:
     result = 0
     try:
         args = arguments(argv)
+        configure_sort(args)
+        configure_filter(args)
         get_log(args)  # Fail clearly before networking if the log cannot be opened.
         get_summary(args)
         result = run(args)

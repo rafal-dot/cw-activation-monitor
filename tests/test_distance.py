@@ -183,7 +183,7 @@ class DistanceTests(unittest.TestCase):
             selected = [models.ActivationSpot(spot.call, spot.reference, spot.frequency, when, spot.name, spot.location)]
             self.assertEqual(state.apply(models.Snapshot(selected, [], [], when), when), [])
             self.assertIs(next(iter(state.entries.values())), original_entry)
-            self.assertEqual(len(state.rows(when)[1]), 1)
+            self.assertEqual(len(state.rows(when)[0]), 1)
             self.assertIn(expected, views_ui.render(state, when))
         state.rows(NOW + 700)
         self.assertIn("5004 km", views_ui.render(state, NOW + 700))

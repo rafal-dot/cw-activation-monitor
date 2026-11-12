@@ -121,7 +121,7 @@ class MatchingTests(unittest.TestCase):
         self.assertEqual(state.apply(snapshot, NOW + 60), [])
         state.apply(models.Snapshot([], [], [], NOW + 120), NOW + 120)
         self.assertEqual(state.apply(snapshot, NOW + 180), [])
-        self.assertEqual(len(state.rows(NOW + 180)[1]), 1)
+        self.assertEqual(len(state.rows(NOW + 180)[0]), 1)
 
 
 class RbnClientTests(unittest.TestCase):

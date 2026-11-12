@@ -1,7 +1,9 @@
+.github/
 __pycache__/
 *.py[cod]
 .venv/
 *.csv
+*.pyc
 .*.lock
 .*.tmp
 *.log

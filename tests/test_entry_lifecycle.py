@@ -29,12 +29,14 @@ class EntryLifecycleTests(unittest.TestCase):
         self.assertEqual(recent[0][1].frequency, 7028)
         self.assertEqual(table_ui.row_values(*recent[0], NOW + 60)[0], "BND")
         self.assertIn("NEW BAND: 20m → 40m", views_ui.new_banner(recent, NOW + 60))
-        self.assertEqual(history[0][1].frequency, 14052.9)
-        self.assertEqual(table_ui.row_values(*history[0], NOW + 60, history=True)[10], "ACTIVE")
+        self.assertEqual(history, [])
+        self.assertEqual(recent[1][1].frequency, 14052.9)
+        self.assertEqual(table_ui.row_values(*recent[1], NOW + 60)[10], "ACTIVE")
         self.assertEqual(self.state.apply(snapshot(NOW + 120, 14053.0, False), NOW + 120), [])
-        history = self.state.rows(NOW + 120)[1]
-        self.assertEqual(len(history), 2)
-        old_band = next(row for row in history if row[1].key[1] == "20m")
+        active, history = self.state.rows(NOW + 120)
+        self.assertEqual(history, [])
+        self.assertEqual(len(active), 2)
+        old_band = next(row for row in active if row[1].key[1] == "20m")
         self.assertEqual(old_band[1].frequency, 14053.0)
         self.assertEqual(table_ui.row_values(*old_band, NOW + 120, history=True)[0], "UPD")
 
@@ -59,26 +61,28 @@ class EntryLifecycleTests(unittest.TestCase):
         self.assertEqual(self.state.rows(NOW + 2101), ([], []))
         self.assertEqual(self.state.apply(snapshot(NOW + 2200, heard=False), NOW + 2200), [])
         recent, history = self.state.rows(NOW + 2200)
-        self.assertEqual(recent, [])
-        self.assertEqual(len(history), 1)
-        self.assertEqual(table_ui.row_values(*history[0], NOW + 2200, history=True)[10], "ACTIVE")
+        self.assertEqual(history, [])
+        self.assertEqual(len(recent), 1)
+        self.assertEqual(table_ui.row_values(*recent[0], NOW + 2200)[10], "ACTIVE")
 
     def test_new_window_and_status_are_independent(self):
         self.args.new_max_age = 60
         self.state.apply(snapshot(NOW), NOW)
         self.assertEqual([len(rows) for rows in self.state.rows(NOW + 59)], [1, 0])
         recent, history = self.state.rows(NOW + 60)
-        self.assertEqual(recent, [])
-        self.assertEqual(table_ui.row_values(*history[0], NOW + 60, history=True)[10], "ACTIVE")
+        self.assertEqual(history, [])
+        self.assertEqual(table_ui.row_values(*recent[0], NOW + 60)[10], "ACTIVE")
+        self.assertTrue(recent[0][0].archived)
+        self.assertEqual(views_ui.new_banner(recent, NOW + 60), "NEW: —")
         self.assertEqual(self.state.entries[("IU1PZC", "20m", "IT-0759", "POTA")].created_at, NOW)
 
-    def test_historical_frequency_change_is_reported_and_can_be_acknowledged(self):
+    def test_old_active_frequency_change_is_reported_and_can_be_acknowledged(self):
         self.state.apply(snapshot(NOW), NOW)
         self.state.rows(NOW + 301)
         self.state.apply(snapshot(NOW + 310, 14053.1, False), NOW + 310)
         recent, history = self.state.rows(NOW + 310)
-        self.assertEqual(recent, [])
-        self.assertIn("Spot 14052.9 → 14053.1 kHz", models.update_description(*history[0], NOW + 310))
+        self.assertEqual(history, [])
+        self.assertIn("Spot 14052.9 → 14053.1 kHz", models.update_description(*recent[0], NOW + 310))
         frame = views_ui.screen_frame(self.state, NOW + 310, 24, 120)
         self.assertFalse(any("UPDATED:" in text for text, _ in frame))
         row, style = next((text, style) for text, style in frame if is_row(text, "IU1PZC"))
@@ -90,8 +94,8 @@ class EntryLifecycleTests(unittest.TestCase):
         self.assertNotIn("^UPDATED:", rendered)
         self.assertIn("ACTIVE UPD | Spot 14052.9 → 14053.1 kHz", rendered)
         self.state.acknowledge(NOW + 311)
-        self.assertEqual(models.update_description(*history[0], NOW + 311), "")
-        self.assertEqual(table_ui.row_values(*history[0], NOW + 311, history=True)[0], "")
+        self.assertEqual(models.update_description(*recent[0], NOW + 311), "")
+        self.assertEqual(table_ui.row_values(*recent[0], NOW + 311)[0], "")
 
     def test_comment_is_last_and_contains_keywords_instead_of_prefix_columns(self):
         self.state.apply(snapshot(NOW), NOW)

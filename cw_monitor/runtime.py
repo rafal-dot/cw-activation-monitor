@@ -17,6 +17,7 @@ from .ui.layout import ColumnLayout
 from .ui.colors import colors_enabled
 from .ui.views import render, screen_frame
 from .values import clean
+from .sorting import SortOrder
 
 
 def demo_data(now: float, receivers: list[str], programs: list[str] | None = None) -> tuple[list[ActivationSpot], list[RbnSpot]]:
@@ -100,6 +101,8 @@ def poll_worker(args: argparse.Namespace, events: Queue, stop: Event, small_batc
 
 def run_terminal(screen, args: argparse.Namespace) -> int:
     from .ui.terminal import CursesDisplay
+    from .ui.sort_menu import SortMenu
+    from .ui.filter_menu import FilterMenu
 
     display, state = CursesDisplay(screen, colors=colors_enabled(args.color)), Monitor(args)
     layout = ColumnLayout()
@@ -107,6 +110,7 @@ def run_terminal(screen, args: argparse.Namespace) -> int:
     worker = Thread(target=poll_worker, args=(args, events, stop, small_batches), daemon=True)
     worker.start()
     next_frame_at, last_size = 0.0, None
+    menu = None
     try:
         while True:
             now = time.time()
@@ -131,9 +135,30 @@ def run_terminal(screen, args: argparse.Namespace) -> int:
             height, width = screen.getmaxyx()
             tick = time.monotonic()
             if changed or (height, width) != last_size or tick >= next_frame_at:
-                display.draw(screen_frame(state, now, height, width, layout))
+                frame = screen_frame(state, now, height, width, layout)
+                display.draw(menu.overlay(frame, height, width) if menu else frame)
                 next_frame_at, last_size = tick + 1, (height, width)
             key = screen.getch()  # The input timeout keeps timers responsive.
+            if key in (ord("q"), ord("Q"), 3):
+                return 0
+            if menu is not None:
+                selected = menu.handle(key)
+                if selected is not None:
+                    if isinstance(selected, SortOrder):
+                        state.set_sort(selected)
+                    else:
+                        state.set_filter(selected)
+                if menu.closed:
+                    menu = None
+                if key != -1:
+                    next_frame_at = 0
+                continue
+            if key in (ord("s"), ord("S")):
+                menu = SortMenu(state.sort)
+                next_frame_at = 0
+            if key in (ord("f"), ord("F")):
+                menu = FilterMenu(state.snr_filter)
+                next_frame_at = 0
             if key == ord(" "):
                 state.acknowledge(time.time())
                 next_frame_at = 0
@@ -143,8 +168,6 @@ def run_terminal(screen, args: argparse.Namespace) -> int:
                 next_frame_at = 0
                 if state.log:
                     state.log.record("RBN_BATCHES_ENABLED", time.time(), detail="keyboard acknowledgement")
-            if key in (ord("q"), ord("Q"), 3):
-                return 0
     finally:
         # Do not wait for an in-flight HTTPS request when quitting.
         stop.set()

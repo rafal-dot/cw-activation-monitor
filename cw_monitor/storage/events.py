@@ -12,19 +12,19 @@ from threading import Lock
 from ..config import UTC
 from ..models import Match
 from ..values import band_for, clean
-from .files import lock_csv, upgrade_qth_csv
+from .files import lock_csv, upgrade_csv_schema
 
 
 class EventLog:
     fields = ("timestamp_utc", "source_time_utc", "event", "program", "callsign",
-              "reference", "qth", "band", "spot_khz", "rbn_khz", "receivers", "snr_db", "wpm", "detail")
+              "reference", "qth", "band", "spot_khz", "rbn_khz", "spotters", "snr_db", "wpm", "detail")
 
     def __init__(self, path: Path, level: str):
         self.path = path = path.resolve()
         self.level, self.error, self.lock, self.closed = level, "", Lock(), False
         with ExitStack() as resources:
             self.lock_file = resources.enter_context(lock_csv(path, "Event log"))
-            upgrade_qth_csv(path, self.fields)
+            upgrade_csv_schema(path, self.fields)
             needs_newline = False
             if path.exists() and path.stat().st_size:
                 with path.open("rb") as source:
@@ -61,7 +61,7 @@ class EventLog:
                           qth="/".join(match.reference_qths.get(p, "") for p in match.references),
                           band=band_for(match.frequency), spot_khz=f"{match.frequency:.1f}",
                           rbn_khz="/".join(f"{r.frequency:.1f}" for r in match.receptions),
-                          receivers="/".join(r.receiver for r in match.receptions),
+                          spotters="/".join(r.receiver for r in match.receptions),
                           snr_db="/".join(str(r.snr) for r in match.receptions),
                           wpm="/".join(str(r.wpm) for r in match.receptions))
         with self.lock:

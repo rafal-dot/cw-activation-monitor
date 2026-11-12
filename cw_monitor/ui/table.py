@@ -5,9 +5,10 @@ from __future__ import annotations
 from ..geo import azimuth_text, distance_text
 from ..models import ChangedField, Entry, Match, latest_reception, update_description
 from ..values import age_text, band_for, clean
+from ..filtering import accepts_snr
 
 
-HEADERS = ["", "Activator", "Reference", "Spot kHz", "Receiver", "SNR dB", "WPM", "RBN age", "RBN kHz", "Band", "Status", "Comment",
+HEADERS = ["", "Activator", "Reference", "Spot kHz", "Spotters", "SNR dB", "WPM", "RBN age", "RBN kHz", "Band", "Status", "Comment",
            "First seen", "Last spot", "Distance", "Program", "Azimuth"]
 
 
@@ -41,14 +42,25 @@ def reference_label(match: Match, name_length: int | None) -> str:
     return ", ".join(labels)
 
 
+def _measurement_summary(values: list[str]) -> str:
+    """Show unanimous readings once; otherwise retain every spotter's position."""
+    if not values:
+        return "—"
+    return values[0] if all(value == values[0] for value in values) else " / ".join(values)
+
+
 def row_values(entry: Entry, match: Match, now: float, history: bool = False,
                park_name_length: int | None = None, qth: tuple[float, float] | None = None,
-               distance_unit: str = "km") -> list[str]:
+               distance_unit: str = "km", minimum_snr: int | None = None) -> list[str]:
+    filtered = not accepts_snr(match.receptions, minimum_snr)
     marker = ("UPD" if now < entry.updated_until else
               ("BND" if entry.previous_bands else ">>>") if not history and now < entry.new_until else "")
     status = "UNKNOWN" if entry.awaiting_source else "ACTIVE" if entry.active_match(now) else "INACTIVE"
     keywords = []
-    if 0 <= now - entry.created_at < 60 and now < entry.new_until:
+    if filtered:
+        marker = ""
+        keywords.append("FILTERED")
+    if not filtered and 0 <= now - entry.created_at < 60 and now < entry.new_until:
         keywords.append("NEW")
     if entry.previous_bands and now < entry.new_until:
         keywords.append("BND")
@@ -67,9 +79,9 @@ def row_values(entry: Entry, match: Match, now: float, history: bool = False,
     return [marker, match.call,
             reference_label(match, park_name_length), f"{match.frequency:.1f}",
             " / ".join(s.receiver for s in match.receptions) or "—",
-            " / ".join(str(s.snr) for s in match.receptions) or "—",
-            " / ".join(str(s.wpm) for s in match.receptions) or "—",
-            " / ".join(age_text(now - s.time) if s.time is not None else "—" for s in match.receptions) or "—",
+            _measurement_summary([str(s.snr) for s in match.receptions]),
+            _measurement_summary([str(s.wpm) for s in match.receptions]),
+            _measurement_summary([age_text(now - s.time) if s.time is not None else "—" for s in match.receptions]),
             rbn_frequency,
             band_for(match.frequency), status, comment,
             age_text(now - entry.created_at) if entry.first_seen_known else "—", age_text(now - entry.spot_time),

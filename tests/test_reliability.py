@@ -193,3 +193,27 @@ class TerminalLoopTests(unittest.TestCase):
             names = [name.strip() for name in columns]
             start = names.index('RBN kHz')
             self.assertEqual(names[start:start + 4], ['RBN kHz', 'SNR dB' if header == plain else 'dB', 'WPM', 'Reference'])
+
+    def test_sort_menu_applies_once_cancels_drafts_and_keeps_ticking_and_resizing(self):
+        from cw_monitor.sorting import SortOrder
+        with patch('cw_monitor.monitor.save_sort', return_value='') as save:
+            frames, state, calls = self.drive(14, {0: ord('s'), 1: ord('5'), 2: ord('d'), 3: 10,
+                                                   6: ord('s'), 7: ord('3'), 8: 27, 10: 'resize'})
+        self.assertEqual(len(calls), 14)
+        self.assertEqual(state.sort, SortOrder('distance', 'desc'))
+        save.assert_called_once_with(SortOrder('distance', 'desc'))
+        self.assertTrue(any('Sort activations' in text for _, frame in frames for text, _ in frame))
+        self.assertTrue(any('Sort: Dist ↓' in text for text, _ in frames[-1][1]))
+        self.assertEqual(len(frames[-1][1]), 31)
+
+    def test_filter_menu_applies_once_peeks_cancels_and_keeps_resize_and_quit_responsive(self):
+        from cw_monitor.filtering import SnrFilter
+        with patch('cw_monitor.monitor.save_filter', return_value='') as save:
+            frames, state, calls = self.drive(14, {0: ord('f'), 1: ord('2'), 2: ord('0'), 3: ord('v'), 4: 10,
+                                                   7: ord('f'), 8: ord('o'), 9: 27, 10: 'resize'})
+        self.assertEqual(len(calls), 14)
+        self.assertEqual(state.snr_filter, SnrFilter(20, True))
+        save.assert_called_once_with(SnrFilter(20, True))
+        self.assertTrue(any('Minimum SNR filter' in text for _, frame in frames for text, _ in frame))
+        self.assertTrue(any('Filtered (shown): 1' in text for text, _ in frames[-1][1]))
+        self.assertEqual(len(frames[-1][1]), 31)

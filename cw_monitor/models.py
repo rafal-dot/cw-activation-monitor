@@ -108,6 +108,7 @@ class Entry:
     restored: bool = False
     awaiting_source: bool = False
     first_seen_known: bool = True
+    alerted: bool = True  # Legacy/restored records have already been announced.
 
     @property
     def last_heard(self) -> float | None:

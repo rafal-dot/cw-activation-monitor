@@ -178,7 +178,7 @@ class RbnClient:
             if raw and skipped == len(raw):
                 raise SourceError("RBN: could not parse any spots")
             self.request_log.append(f"{'stream' if calls is None else 'batches'} "
-                                    f"receivers={','.join(receivers)} calls={','.join(calls) if calls else 'all'} "
+                                    f"spotters={','.join(receivers)} calls={','.join(calls) if calls else 'all'} "
                                     f"limit={limit} received={len(raw)} skipped={skipped}")
             return result, len(raw), skipped
         raise AssertionError("Unreachable")

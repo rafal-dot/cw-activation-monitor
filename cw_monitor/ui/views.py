@@ -12,10 +12,11 @@ from urllib.parse import quote, urlencode
 
 from ..config import RBN_URL, UTC
 from ..models import ChangedField, Entry, Match
-from ..values import band_for, clean, max_spot_age
+from ..values import age_text, band_for, clean, max_spot_age
 from .table import COMMENT_LEGEND, FREQUENCY_COLUMNS, HEADERS, NUMERIC_FIELDS, TABLE_FIELDS, comment_legend, row_values
 from .layout import ColumnLayout, HighlightedText, cell_width, compact_values, fit_column, wrap_cells
 from .colors import ansi_text, measurement_spans, value_spans
+from ..filtering import accepts_snr
 if TYPE_CHECKING:
     from ..monitor import Monitor
 
@@ -27,21 +28,24 @@ def source_status(state: Monitor) -> str:
         return "Fetching updates from sources or RBN…"
     if state.warnings:
         return "WARNING: " + " | ".join(state.warnings)
-    return f"Sources: HTTPS every {state.args.interval:g}s | {', '.join(state.args.spotters)} | reception ≠ QSO"
+    return f"Refresh every {state.args.interval:g}s | {', '.join(state.args.spotters)} | reception ≠ QSO"
 
 
 def refresh_status(state: Monitor) -> str:
     if state.loading:
-        return "HTTPS: fetching…"
+        return "Refreshing…"
     if state.next_poll_at is None:
-        return "HTTPS: waiting…"
+        return "Refresh: waiting…"
     remaining = max(0, math.ceil(state.next_poll_at - time.monotonic()))
-    minutes, seconds = divmod(remaining, 60)
-    return f"HTTPS in {minutes:02d}:{seconds:02d}"
+    return "Refresh in " + age_text(remaining)
 
 
 def reports(state: Monitor) -> list[str]:
     result = ["SOURCE ERROR: " + state.error + " | last known data"] if state.error else []
+    if state.sort_error:
+        result.append("SORT SETTINGS: " + clean(state.sort_error))
+    if state.filter_error:
+        result.append("FILTER SETTINGS: " + clean(state.filter_error))
     if state.log and state.log.error:
         result.append("LOG ERROR: " + state.log.error)
     if state.summary and state.summary.error:
@@ -58,7 +62,7 @@ def reports(state: Monitor) -> list[str]:
     return result + ["WARNING: " + clean(w) for w in state.warnings]
 
 
-def new_banner(active: list[tuple[Entry, Match]], now: float) -> str:
+def new_banner(active: list[tuple[Entry, Match]], now: float, minimum_snr: int | None = None) -> str:
     descriptions = [f"{m.call} {m.program} {','.join(m.references)} | "
                     + (f"NEW BAND: {'/'.join(e.previous_bands)} → {band_for(m.frequency)} | "
                        if e.previous_bands else "")
@@ -67,7 +71,7 @@ def new_banner(active: list[tuple[Entry, Match]], now: float) -> str:
                        if m.frequency != max(m.receptions, key=lambda r: r.time).frequency else "")
                     + " | "
                     + ", ".join(f"{r.receiver} {r.snr} dB" for r in m.receptions)
-                    for e, m in active if now < e.new_until]
+                    for e, m in active if now < e.new_until and accepts_snr(m.receptions, minimum_snr)]
     if not descriptions:
         return "NEW: —"
     title = "NEW ACTIVATION" if len(descriptions) == 1 else "NEW ACTIVATIONS"
@@ -94,6 +98,15 @@ def limits_text(args: argparse.Namespace) -> str:
     return " | ".join(f"{p} ≤ {max_spot_age(args, p):g}s" for p in args.programs)
 
 
+def filter_status(state: Monitor, now: float, compact: bool = False) -> str:
+    if state.snr_filter.minimum is None:
+        return "Filter: Off"
+    count = state.filtered_count(now)
+    if compact:
+        return f"SNR≥{state.snr_filter.minimum} {'Shown' if state.snr_filter.show_filtered else 'Hidden'}:{count}"
+    return state.snr_filter.label + f" | {'Filtered (shown)' if state.snr_filter.show_filtered else 'Hidden'}: {count}"
+
+
 def render(state: Monitor, now: float, color: bool = False) -> str:
     """Build a complete snapshot for one-shot, plain or redirected output."""
     args = state.args
@@ -101,20 +114,28 @@ def render(state: Monitor, now: float, color: bool = False) -> str:
     clock = datetime.fromtimestamp(now, UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
     count = sum(0 <= now - p.time <= max_spot_age(args, p.program) for p in state.spots)
     lines = [f"{'/'.join(args.programs)} CW → RBN | {clock}" + (" | DEMO — FICTIONAL DATA" if args.demo else ""),
-             new_banner(active, now)]
+             new_banner(active, now, args.min_snr)]
     for entry, match in active:
-        if now < entry.flash_until:
+        if now < entry.flash_until and accepts_snr(match.receptions, args.min_snr):
             lines.append(f"ALERT: {match.call} — heard by "
                          + ", ".join(s.receiver for s in match.receptions))
     lines.extend(reports(state))
-    for title, items, historical in (("ACTIVE / NEW", active, False), ("HISTORY", history, True)):
-        lines.extend(["", title])
-        rows = [HEADERS] + [row_values(e, m, now, historical, args.park_name_length,
-                                      args.qth, args.distance_unit) for e, m in items]
-        rows = [[row[i] for i in TABLE_FIELDS] for row in rows]
+    groups = [("ACTIVE", active, False), ("HISTORY", history, True)]
+    group_rows = []
+    for _, items, historical in groups:
+        values = [row_values(e, m, now, historical, args.park_name_length, args.qth, args.distance_unit, args.min_snr)
+                  for e, m in items]
+        group_rows.append([[row[i] for i in TABLE_FIELDS] for row in [HEADERS] + values])
+    widths = [max(cell_width(row[i]) for rows in group_rows for row in rows) for i in range(len(TABLE_FIELDS))]
+    header_shown = False
+    for (title, items, historical), rows in zip(groups, group_rows):
+        lines.extend(["", f"{title} ({len(items)})" + (" | " + filter_status(state, now) if not historical else "")])
         if items:
-            widths = [max(cell_width(row[i]) for row in rows) for i in range(len(TABLE_FIELDS))]
+            if header_shown:
+                lines.append("-+-".join("-" * w for w in widths))
             for index, row in enumerate(rows):
+                if index == 0 and header_shown:
+                    continue
                 parts = [fit_column(value, w, index > 0 and field in NUMERIC_FIELDS)
                          for field, value, w in zip(TABLE_FIELDS, row, widths)]
                 text = " | ".join(parts)
@@ -127,14 +148,15 @@ def render(state: Monitor, now: float, color: bool = False) -> str:
                         if now < entry.updated_until and FREQUENCY_COLUMNS.get(field) in entry.updated_fields:
                             highlights.append((offset + len(part) - len(part.lstrip()), offset + len(part.rstrip())))
                         offset += len(part) + 3
-                    style = ("new" if not historical and now < entry.flash_until else
+                    style = ("new" if not historical and now < entry.flash_until and accepts_snr(entry.match.receptions, args.min_snr) else
                              "history" if entry.active_match(now) is None else "normal")
                     text = ansi_text(HighlightedText(text, highlights, color_spans=spans), style)
                 lines.append(text)
                 if index == 0:
                     lines.append("-+-".join("-" * w for w in widths))
+                    header_shown = True
         else:
-            lines.append("No entries." if historical else "No new entries.")
+            lines.append("No entries.")
         for entry, match in items:
             if args.links:
                 lines.extend(links_for(match, args, historical))
@@ -144,6 +166,7 @@ def render(state: Monitor, now: float, color: bool = False) -> str:
                   f"history ≤ {args.history_max_age:g}s | tolerance ±{args.tolerance:g} kHz"])
     if not state.error and not state.warnings:
         lines.append(source_status(state))
+    lines.append(refresh_status(state) + " | Sort: " + state.sort.label)
     if state.rbn_status:
         lines.append(state.rbn_status)
     lines.append(COMMENT_LEGEND)
@@ -151,7 +174,7 @@ def render(state: Monitor, now: float, color: bool = False) -> str:
     lines.append(f"Distance: great-circle distance from QTH {args.qth_label} to the reference location ({args.distance_unit})."
                  if args.qth is not None else "Distance: set --qth or CW_ACTIVATION_QTH to use your home location.")
     lines.append("Azimuth: initial bearing from QTH, clockwise from true north (000° N, 090° E).")
-    lines.append("SNR, WPM and RBN age follow receiver order. ACTIVE entries may also appear in history.")
+    lines.append("SNR, WPM and RBN age: one value if all agree; otherwise spotter order. HISTORY: inactive or awaiting source data.")
     return "\n".join(lines)
 
 
@@ -166,21 +189,21 @@ def screen_frame(state: Monitor, now: float, height: int, width: int, layout: Co
     if height < 8 or width < 40:
         lines = [("CW → RBN — enlarge terminal (min. 40×8)", "title"),
                  (notices[0] if notices else source_status(state), "error" if notices else "normal"),
-                 (new_banner(active, now), "banner")]
+                 (new_banner(active, now, args.min_snr), "banner")]
         return lines[:height]
     updated = (datetime.fromtimestamp(state.updated_at, UTC).strftime("%H:%M:%S UTC")
                if state.updated_at is not None else "waiting")
-    footer = [(f"{refresh_status(state)} | updated: {updated}", "muted")]
-    if height >= 10:
-        footer.append((f"{limits_text(args)} | RBN start ≤ {args.rbn_max_age:g}s | history ≤ {args.history_max_age:g}s | ±{args.tolerance:g} kHz", "muted"))
+    footer = [(f"{refresh_status(state)} | Sort: {state.sort.short_label} | updated: {updated}", "muted")]
     if height >= 14 and state.rbn_status:
         footer.append((state.rbn_status, "muted"))
+    if height >= 10:
+        footer.append((f"{limits_text(args)} | RBN start ≤ {args.rbn_max_age:g}s | history ≤ {args.history_max_age:g}s | ±{args.tolerance:g} kHz", "muted"))
     if height >= 10 or not notices:
         footer.append((comment_legend(width), "muted"))
     table_bottom = height - len(footer) - 1  # Reserve the last line for controls.
     lines = [("/".join(args.programs) + " CW → RBN | " + ", ".join(args.spotters)
               + f" | QTH: {args.qth_label}", "title"),
-             (new_banner(active, now), "banner" if any(now < e.new_until for e, _ in active) else "muted")]
+             (new_banner(active, now, args.min_snr), "banner" if any(now < e.new_until and accepts_snr(m.receptions, args.min_snr) for e, m in active) else "muted")]
     # Prioritize reports while preserving room for the table.
     max_reports = max(1, height - 9)
     lines.extend((text, "error") for text in notices[:max_reports])
@@ -189,7 +212,7 @@ def screen_frame(state: Monitor, now: float, height: int, width: int, layout: Co
     items = active + history
     columns = layout.choose(
         (height, width), [row_values(e, m, now, park_name_length=args.park_name_length,
-                                     qth=args.qth, distance_unit=args.distance_unit) for e, m in items],
+                                     qth=args.qth, distance_unit=args.distance_unit, minimum_snr=args.min_snr) for e, m in items],
         max((len(m.receptions) for _, m in items), default=1),
         max((len(",".join(m.references)) for _, m in items), default=4),
         max(*(max_spot_age(args, p) for p in args.programs), args.history_max_age))
@@ -219,12 +242,15 @@ def screen_frame(state: Monitor, now: float, height: int, width: int, layout: Co
         return HighlightedText("".join(parts), highlights, separators, band_spans, colors)
 
     shown_active = shown_history = 0
-    for title, items, historical in (("ACTIVE / NEW", active, False), ("HISTORY", history, True)):
+    header_shown = False
+    for title, items, historical in (("ACTIVE", active, False), ("HISTORY", history, True)):
         available = table_bottom - len(lines)
-        if available < 3:
+        if available < (2 if header_shown else 3):
             break
-        lines.append((f"{title} ({len(items)})", "history" if historical else "title"))
-        lines.append((format_row(HEADERS), "table_header"))
+        lines.append((f"{title} ({len(items)})" + (" | " + filter_status(state, now, width < 60) if not historical else ""), "history" if historical else "title"))
+        if not header_shown:
+            lines.append((format_row(HEADERS), "table_header"))
+            header_shown = True
         if height >= 10 and available >= 4:
             joiner = "─┼─" if "│" in layout.separator else "─"
             lines.append((joiner.join("─" * w for _, w in columns), "separator"))
@@ -239,10 +265,10 @@ def screen_frame(state: Monitor, now: float, height: int, width: int, layout: Co
         for entry, match in items:
             if len(lines) >= table_bottom:
                 break
-            style = ("new" if not historical and now < entry.flash_until else
+            style = ("new" if not historical and now < entry.flash_until and accepts_snr(match.receptions, args.min_snr) else
                      "history" if entry.active_match(now) is None else "normal")
             values = row_values(entry, match, now, historical, args.park_name_length,
-                                args.qth, args.distance_unit)
+                                args.qth, args.distance_unit, args.min_snr)
             park_details = values[2]
             separate_name = not park_width or bool(args.park_name_length != 0 and match.reference_names
                                                    and cell_width(park_details) > park_width)
@@ -305,9 +331,11 @@ def screen_frame(state: Monitor, now: float, height: int, width: int, layout: Co
         lines.append(("", "normal"))
     lines.extend(footer)
     hidden = f"{len(active) - shown_active}/{len(history) - shown_history}"
-    if width >= 60:
-        controls = "Space: acknowledge | b: batches" + (" ON" if state.batch_mode else "") + " | q: quit"
+    if width >= 110:
+        controls = "Space: acknowledge | s: sort | f: filter | b: batches" + (" ON" if state.batch_mode else "") + " | q: quit"
+    elif width >= 60:
+        controls = "Space:ack s:sort f:filter b:batch" + (" ON" if state.batch_mode else "") + " q:quit"
     else:
-        controls = "b:ON | q:quit" if state.batch_mode else "b:split | q:quit"
+        controls = "s:sort f:filter q:quit"
     lines.append((f"Hidden A/H: {hidden} | {controls}", "muted"))
     return lines

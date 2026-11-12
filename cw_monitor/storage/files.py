@@ -26,8 +26,12 @@ def lock_csv(path: Path, label: str) -> TextIO:
     return handle
 
 
-def upgrade_qth_csv(path: Path, fields: tuple[str, ...]) -> None:
-    """Add the optional QTH column to the preceding schema, preserving a backup."""
+def upgrade_csv_schema(path: Path, fields: tuple[str, ...]) -> None:
+    """Under the caller's sidecar lock, upgrade known schemas with an exact backup.
+
+    Supports the former receivers column and schemas without reference QTH.
+    Unknown headers and malformed rows must leave the original file untouched.
+    """
     if not path.exists() or not path.stat().st_size:
         return
     original = path.stat()
@@ -36,7 +40,9 @@ def upgrade_qth_csv(path: Path, fields: tuple[str, ...]) -> None:
         header = tuple(reader.fieldnames or ())
         if header == fields:
             return
-        if header != tuple(name for name in fields if name != "qth"):
+        rename_spotters = "spotters" in fields and "receivers" in header
+        renamed = tuple("spotters" if name == "receivers" and rename_spotters else name for name in header)
+        if renamed not in (fields, tuple(name for name in fields if name != "qth")):
             raise ValueError(f"File has a different CSV header: {path}")
         temporary = None
         try:
@@ -48,7 +54,8 @@ def upgrade_qth_csv(path: Path, fields: tuple[str, ...]) -> None:
                 for row in reader:
                     if None in row or any(value is None for value in row.values()):
                         raise ValueError(f"Wrong column count in {path}, line {reader.line_num}")
-                    writer.writerow(dict(row, qth=""))
+                    writer.writerow({name: row.get("receivers" if name == "spotters" and rename_spotters else name, "")
+                                     for name in fields})
                 output.flush()
                 os.fsync(output.fileno())
             os.chmod(temporary, original.st_mode & 0o777)
@@ -57,7 +64,8 @@ def upgrade_qth_csv(path: Path, fields: tuple[str, ...]) -> None:
                 raise ValueError(f"CSV changed during upgrade: {path}")
             backup_dir = path.parent / ".csv-backups"
             backup_dir.mkdir(exist_ok=True)
-            backup = Path(tempfile.mkdtemp(prefix="before-qth-", dir=backup_dir)) / path.name
+            prefix = "before-spotters-" if rename_spotters else "before-qth-"
+            backup = Path(tempfile.mkdtemp(prefix=prefix, dir=backup_dir)) / path.name
             shutil.copy2(path, backup)
             if path.stat().st_mtime_ns != original.st_mtime_ns or path.stat().st_size != original.st_size:
                 raise ValueError(f"CSV changed during upgrade: {path}")

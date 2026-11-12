@@ -129,7 +129,7 @@ class Poller:
             key = p.key
             if key not in latest or p.time >= latest[key].time:
                 latest[key] = p
-        pending = [p for key, p in latest.items() if key not in self.confirmed]
+        pending = [p for key, p in latest.items() if key not in self.confirmed or args.min_snr is not None]
         received = []
         try:
             if time.monotonic() < self.retry_at.get("RBN", 0):
@@ -152,15 +152,20 @@ class Poller:
                     and station_band(r.call, r.frequency) == station_band(p.call, p.frequency)
                     and abs(r.frequency - p.frequency) <= args.tolerance + 1e-9]
             if hits:
-                self.confirmed[p.key] = hits
+                heard = {r.receiver: r for r in self.confirmed.get(p.key, [])}
+                for hit in hits:
+                    previous = heard.get(hit.receiver)
+                    if previous is None or previous.time is None or hit.time > previous.time:
+                        heard[hit.receiver] = hit
+                self.confirmed[p.key] = [heard[r] for r in args.spotters if r in heard]
             elif self.log:
                 same_receiver = [r for r in same_call if r.receiver in args.spotters]
                 current = [r for r in same_receiver if r.time is not None and 0 <= now - r.time <= args.rbn_max_age]
                 same_band = [r for r in current if station_band(r.call, r.frequency) == station_band(p.call, p.frequency)]
                 if not same_call:
-                    reason = "no recent CW report in selected receiver stream"
+                    reason = "no recent CW report in selected spotter stream"
                 elif not same_receiver:
-                    reason = "receiver not selected"
+                    reason = "spotter not selected"
                 elif not current:
                     reason = "RBN timestamp outside allowed age"
                 elif not same_band:

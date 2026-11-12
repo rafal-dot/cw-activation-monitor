@@ -110,13 +110,31 @@ class ResumeTests(unittest.TestCase):
             snapshot = poller.fetch()
         self.assertEqual(fetch.call_args.args[0], [])
         self.assertEqual(restored.apply(snapshot, NOW), [])
-        self.assertEqual(restored.rows(NOW)[0], [])
-        entry, match = restored.rows(NOW)[1][0]
+        self.assertEqual(restored.rows(NOW)[1], [])
+        entry, match = restored.rows(NOW)[0][0]
         self.assertIsNotNone(entry.active_match(NOW))
         self.assertEqual(table_ui.row_values(entry, match, NOW, history=True)[11], "ACTIVE RESTORED")
         self.assertEqual(table_ui.row_values(entry, match, NOW, history=True)[7], "—")
         self.assertEqual([row["event"] for row in self.records()].count("NEW"), 1)
         self.assertFalse(entry.awaiting_source)
+
+    def test_legacy_receiver_header_migrates_before_history_restore(self):
+        original = self.start(summary=False)
+        self.apply(original)
+        self.close(original)
+        saved = self.events.read_bytes().replace(b",spotters,", b",receivers,", 1)
+        self.events.write_bytes(saved)
+        restored = self.start(summary=False)
+        self.assertEqual(restored.restore_count, 1)
+        self.assertEqual(restored.restore_skipped, 0)
+        entry, match = restored.rows(NOW)[1][0]
+        self.assertTrue(entry.restored)
+        self.assertEqual([r.receiver for r in match.receptions], ["SP5GQ"])
+        self.assertEqual(self.records()[0]["spotters"], "SP5GQ")
+        self.assertEqual(len(self.records()), 1)
+        backups = list((self.root / ".csv-backups").glob("*/events.csv"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_bytes(), saved)
 
     def test_fresh_rbn_replaces_unknown_age_and_coordinates_are_refreshed(self):
         original = self.start()
@@ -124,7 +142,7 @@ class ResumeTests(unittest.TestCase):
         self.close(original)
         restored = self.start()
         self.apply(restored, [self.spot(NOW, frequency=14053.0)], NOW)
-        entry, match = restored.rows(NOW)[1][0]
+        entry, match = restored.rows(NOW)[0][0]
         values = table_ui.row_values(entry, match, NOW, qth=restored.args.qth)
         self.assertEqual(values[7], "00:00:10")
         self.assertNotEqual(values[14], "—")

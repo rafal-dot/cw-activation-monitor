@@ -12,6 +12,9 @@ from .restore import startup_entries
 from .sources.programs import join_spots
 from .storage.session import get_log, get_summary
 from .values import clean, max_spot_age
+from .sorting import SortOrder, ordered_rows
+from .storage.preferences import save_sort, save_filter
+from .filtering import SnrFilter, accepts_snr
 
 
 class Monitor:
@@ -37,6 +40,29 @@ class Monitor:
         self.batch_mode = args.rbn_small_batches
         self.qth_warning_until = time.monotonic() + 30
         self.restore_count = len(self.entries)
+        self.sort = SortOrder.resolve(args.sort, args.sort_order)
+        self.sort_error = getattr(args, "sort_error", "")
+        self.snr_filter = SnrFilter(args.min_snr, args.show_filtered)
+        self.filter_error = getattr(args, "filter_error", "")
+        self._acknowledge_filter(time.time())
+
+    def set_sort(self, order: SortOrder) -> None:
+        self.sort = order
+        self.sort_error = save_sort(order)
+
+    def _acknowledge_filter(self, now: float) -> None:
+        for entry in self.entries.values():
+            if not entry.alerted and accepts_snr(entry.match.receptions, self.snr_filter.minimum):
+                entry.alerted = True
+                self.log_entry("FILTER_ACK", entry, now, "revealed by filter setting; no alert")
+
+    def set_filter(self, value: SnrFilter) -> None:
+        changed = self.snr_filter.minimum != value.minimum
+        self.snr_filter = value
+        self.args.min_snr, self.args.show_filtered = value.minimum, value.show_filtered
+        if changed:
+            self._acknowledge_filter(time.time())
+        self.filter_error = save_filter(value)
 
     def qth_warning(self) -> str:
         if self.args.qth is None and time.monotonic() < self.qth_warning_until:
@@ -45,6 +71,8 @@ class Monitor:
 
     def log_entry(self, event: str, entry: Entry, now: float, detail: str = "") -> None:
         if self.log:
+            if not entry.alerted:
+                detail = (detail + " | " if detail else "") + "snr-filter=pending"
             self.log.record(event, now, entry.match, detail, entry.spot_time)
 
     def archive(self, entry: Entry, now: float) -> None:
@@ -101,13 +129,16 @@ class Monitor:
                 bands = self.station_bands.setdefault((match.call, match.program), set())
                 previous_bands = tuple(sorted(bands)) if key[1] not in bands else ()
                 bands.add(key[1])
-                entry = Entry(match, deadlines, self.rank, now + 60, now + args.highlight_seconds,
+                qualifies = accepts_snr(match.receptions, self.snr_filter.minimum)
+                entry = Entry(match, deadlines, self.rank, now + 60 if qualifies else 0,
+                              now + args.highlight_seconds if qualifies else 0, alerted=qualifies,
                               created_at=now, spot_time=latest.time,
                               previous_bands=previous_bands)
                 self.entries[key] = entry
                 self.log_entry("BAND" if entry.previous_bands else "NEW", entry, now,
                                "previous bands: " + "/".join(entry.previous_bands) if entry.previous_bands else "")
-                new.append(match)
+                if qualifies:
+                    new.append(match)
             else:
                 old_match, old_time = entry.match, entry.spot_time
                 changed_fields = set()
@@ -145,6 +176,13 @@ class Monitor:
         if snapshot.rbn_status:
             self.rbn_status = snapshot.rbn_status
         self.refresh_lifecycle(now)
+        for entry in self.entries.values():
+            if (not entry.alerted and entry.active_match(now) is not None
+                    and accepts_snr(entry.match.receptions, self.snr_filter.minimum)):
+                entry.alerted = True
+                entry.new_until, entry.flash_until = now + 60, now + args.highlight_seconds
+                self.log_entry("ALERT", entry, now, "first qualifying SNR")
+                new.append(entry.match)
         if self.summary:
             self.summary.flush()
         return list(reversed(new))
@@ -178,17 +216,22 @@ class Monitor:
                 if entry.inactive_since is None:
                     entry.inactive_since = min(now, max(entry.spot_deadlines.values(), default=now))
 
-    def rows(self, now: float) -> tuple[list[tuple[Entry, Match]], list[tuple[Entry, Match]]]:
+    def rows(self, now: float, include_filtered: bool = False) -> tuple[list[tuple[Entry, Match]], list[tuple[Entry, Match]]]:
         self.refresh_lifecycle(now)
         active, history = [], []
         for entry in self.entries.values():
+            if (not include_filtered and not self.snr_filter.show_filtered
+                    and not accepts_snr(entry.match.receptions, self.snr_filter.minimum)):
+                continue
             match = entry.active_match(now)
-            if match and not entry.archived:
+            if match:
                 active.append((entry, match))
-            elif match or (entry.awaiting_source and entry.inactive_since is None) or (entry.inactive_since is not None
+            elif (entry.awaiting_source and entry.inactive_since is None) or (entry.inactive_since is not None
                            and 0 <= now - entry.inactive_since <= self.args.history_max_age):
-                history.append((entry, match or entry.match))
-        active.sort(key=lambda row: -row[0].rank)
-        history.sort(key=lambda row: (row[0].active_match(now) is None,
-                                      -row[0].spot_time, row[1].call, row[1].key[1], row[1].key[2]))
-        return active, history
+                history.append((entry, entry.match))
+        return (ordered_rows(active, self.sort, self.args.qth),
+                ordered_rows(history, self.sort, self.args.qth))
+
+    def filtered_count(self, now: float) -> int:
+        return sum(not accepts_snr(match.receptions, self.snr_filter.minimum)
+                   for group in self.rows(now, include_filtered=True) for _, match in group)
