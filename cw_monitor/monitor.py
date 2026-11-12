@@ -229,8 +229,8 @@ class Monitor:
             elif (entry.awaiting_source and entry.inactive_since is None) or (entry.inactive_since is not None
                            and 0 <= now - entry.inactive_since <= self.args.history_max_age):
                 history.append((entry, entry.match))
-        return (ordered_rows(active, self.sort, self.args.qth),
-                ordered_rows(history, self.sort, self.args.qth))
+        return (ordered_rows(active, self.sort, self.args.qth, now, self.snr_filter.minimum),
+                ordered_rows(history, self.sort, self.args.qth, now, self.snr_filter.minimum))
 
     def filtered_count(self, now: float) -> int:
         return sum(not accepts_snr(match.receptions, self.snr_filter.minimum)
