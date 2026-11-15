@@ -168,7 +168,7 @@ class FilterPreferencesTests(unittest.TestCase):
         for value in ("101", "-101", "nan", "15.5"):
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 cli.arguments(["--min-snr", value])
-        command = [sys.executable, "pota_alert.py", "--demo", "--qth", "KO02KF"]
+        command = [sys.executable, "cw_hunter.py", "--demo", "--qth", "KO02KF"]
         for flags in (["--min-snr", "15"], []):
             result = subprocess.run(command + flags, cwd=Path(__file__).resolve().parents[1],
                                     capture_output=True, text=True, encoding="utf-8", timeout=10)

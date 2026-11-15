@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Command-line entry point for CW Activation Monitor."""
+"""Compatibility entry point for CW Hunter; prefer cw_hunter.py."""
 
 from cw_monitor.cli import main
 

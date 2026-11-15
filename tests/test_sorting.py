@@ -207,7 +207,7 @@ class SortPreferencesTests(unittest.TestCase):
                 cli.arguments([flag, value])
 
     def test_real_cli_reloads_sort_choice_in_another_process(self):
-        command = [sys.executable, "pota_alert.py", "--demo", "--qth", "0,0"]
+        command = [sys.executable, "cw_hunter.py", "--demo", "--qth", "0,0"]
         root = Path(__file__).resolve().parents[1]
         for flags in (["--sort", "wpm", "--sort-order", "asc"], []):
             result = subprocess.run(command + flags, cwd=root, capture_output=True, text=True,

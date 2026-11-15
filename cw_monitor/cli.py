@@ -1,4 +1,4 @@
-"""CW activations from POTA, WWFF and optional SOTA files, confirmed by RBN."""
+"""CW Hunter: CW activations from POTA, WWFF and optional SOTA files, confirmed by RBN."""
 
 from __future__ import annotations
 

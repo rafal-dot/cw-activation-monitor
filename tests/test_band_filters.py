@@ -171,7 +171,7 @@ class BandPreferencesAndMenuTests(unittest.TestCase):
         self.assertFalse(empty.closed); self.assertTrue(empty.error)
 
     def test_real_cli_applies_both_features_and_restores_them_in_another_process(self):
-        command = [sys.executable, "pota_alert.py", "--demo", "--qth", "KO02KF"]
+        command = [sys.executable, "cw_hunter.py", "--demo", "--qth", "KO02KF"]
         for flags in (["--bands", "20m", "40m", "--sort", "frequency"], []):
             result = subprocess.run(command+flags, cwd=Path(__file__).resolve().parents[1],
                                     capture_output=True, text=True, encoding="utf-8", timeout=10)

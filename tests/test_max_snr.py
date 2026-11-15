@@ -123,7 +123,7 @@ class SnrBoundsPreferencesTests(unittest.TestCase):
         self.assertIn("whole dB", malformed.error)
 
     def test_cli_maximum_only_persists_across_real_processes(self):
-        command = [sys.executable, "pota_alert.py", "--demo", "--qth", "KO02KF"]
+        command = [sys.executable, "cw_hunter.py", "--demo", "--qth", "KO02KF"]
         for flags in (["--min-snr", "off", "--max-snr", "10"], []):
             result = subprocess.run(command+flags, cwd=Path(__file__).resolve().parents[1],
                 capture_output=True, text=True, timeout=10)

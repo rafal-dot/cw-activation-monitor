@@ -1,1 +1,1 @@
-"""CW activation monitor components."""
+"""CW Hunter components."""

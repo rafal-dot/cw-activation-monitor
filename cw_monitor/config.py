@@ -18,7 +18,7 @@ PROGRAMS = ("POTA", "SOTA", "WWFF")
 RBN_URL = "https://www.reversebeacon.net"
 
 
-USER_AGENT = "cw-activation-monitor/0.3.0 (read-only activation/RBN monitor)"
+USER_AGENT = "cw-hunter-python/0.3.0 (read-only activation/RBN monitor)"
 MAX_RESPONSE_BYTES = 8_000_000
 
 
