@@ -16,6 +16,7 @@ from ..values import age_text, band_for, clean, max_spot_age
 from .table import COMMENT_LEGEND, FREQUENCY_COLUMNS, HEADERS, NUMERIC_FIELDS, TABLE_FIELDS, comment_legend, row_values
 from .layout import ColumnLayout, HighlightedText, cell_width, compact_values, fit_column, wrap_cells
 from .colors import ansi_text, measurement_spans, value_spans
+from .rbn_status import polling_lines
 from ..filtering import filter_reasons
 if TYPE_CHECKING:
     from ..monitor import Monitor
@@ -28,7 +29,7 @@ def source_status(state: Monitor) -> str:
         return "Fetching updates from sources or RBN…"
     if state.warnings:
         return "WARNING: " + " | ".join(state.warnings)
-    return f"Refresh every {state.args.interval:g}s | {', '.join(state.args.spotters)} | reception ≠ QSO"
+    return f"Sources every {state.args.interval:g}s | {', '.join(state.args.spotters)} | reception ≠ QSO"
 
 
 def refresh_status(state: Monitor) -> str:
@@ -200,9 +201,7 @@ def render(state: Monitor, now: float, color: bool = False) -> str:
                   f"history ≤ {args.history_max_age:g}s | tolerance ±{args.tolerance:g} kHz"])
     if not state.error and not state.warnings:
         lines.append(source_status(state))
-    lines.append(refresh_status(state) + " | Sort: " + state.sort.label)
-    if state.rbn_status:
-        lines.append(state.rbn_status)
+    lines.extend(polling_lines(state.rbn_status, refresh_status(state) + " | Sort: " + state.sort.label, demo=args.demo))
     lines.append(COMMENT_LEGEND)
     lines.append("First seen: time since detection; Last spot: age of the latest program report.")
     lines.append(f"Distance: great-circle distance from QTH {args.qth_label} to the reference location ({args.distance_unit})."
@@ -227,11 +226,17 @@ def screen_frame(state: Monitor, now: float, height: int, width: int, layout: Co
         return lines[:height]
     updated = (datetime.fromtimestamp(state.updated_at, UTC).strftime("%H:%M:%S UTC")
                if state.updated_at is not None else "waiting")
-    footer = [(f"{refresh_status(state)} | Sort: {state.sort.short_label} | updated: {updated}", "muted")]
-    if height >= 14 and state.rbn_status:
-        footer.append((state.rbn_status, "muted"))
+    metadata = f"Sort: {state.sort.short_label} | updated: {updated}"
+    if height >= 14:
+        # Curses reserves the terminal's final column. Wrap complete telemetry
+        # fields before allocating table space, so the display cannot clip them.
+        footer = [(line, "muted") for line in polling_lines(
+            state.rbn_status, refresh_status(state), width - 1, demo=args.demo)]
+    else:
+        footer = [(f"{refresh_status(state)} | {metadata}", "muted")]
     if height >= 10:
-        footer.append((f"{limits_text(args)} | RBN start ≤ {args.rbn_max_age:g}s | history ≤ {args.history_max_age:g}s | ±{args.tolerance:g} kHz", "muted"))
+        details = f"{limits_text(args)} | RBN start ≤ {args.rbn_max_age:g}s | history ≤ {args.history_max_age:g}s | ±{args.tolerance:g} kHz"
+        footer.append(((metadata + " | " if height >= 14 else "") + details, "muted"))
     if height >= 10 or not notices:
         footer.append((comment_legend(width), "muted"))
     table_bottom = height - len(footer) - 1  # Reserve the last line for controls.

@@ -4,6 +4,7 @@ from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 from cw_monitor import models
+from cw_monitor.rbn_status import RbnBatch, RbnMode, RbnTrafficSample
 from cw_monitor.config import RBN_HIGH_TRAFFIC_WARNING
 from cw_monitor.friends import Friend
 from cw_monitor.sources import http
@@ -147,7 +148,7 @@ class AdaptiveFetchTests(unittest.TestCase):
         self.assertEqual(self.client.warnings, [])
         self.assertTrue(all("cdx" not in q for q in self.feed.queries))
         self.assertEqual(self.client.poll_interval, 30)
-        self.assertNotIn("30s", self.client.status)
+        self.assertEqual(self.client.status.interval, 30)
 
     def test_heavier_burst_shortens_to_fifteen_seconds_and_respects_the_minimum(self):
         for i in range(200):
@@ -167,13 +168,13 @@ class AdaptiveFetchTests(unittest.TestCase):
             self.feed.add(f"first{i}", NOW - 40 - i * .52, call="BUSY")
         self.fetch()
         self.assertEqual(self.client.poll_interval, 30)
-        self.assertNotIn("30s", self.client.status)
+        self.assertEqual(self.client.status.interval, 30)
         self.feed.now += 30
         for i in range(150):
             self.feed.add(f"next{i}", self.feed.now - 40 - i * .2, call="BUSY")
         self.fetch()
         self.assertEqual(self.client.poll_interval, 15)
-        self.assertNotIn("15s", self.client.status)
+        self.assertEqual(self.client.status.interval, 15)
 
     def test_repeated_dense_page_does_not_restart_acceleration_after_clock_advances(self):
         for i in range(150):
@@ -268,7 +269,7 @@ class AdaptiveFetchTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].call, "IU1PZC")
         self.assertEqual(self.feed.queries[-1]["cdx"], ["IU1PZC"])
-        self.assertIn("batches", self.client.status)
+        self.assertEqual(self.client.status.mode, RbnMode.BATCHES)
         self.assertEqual(self.client.warnings, [])
         self.assertEqual(self.stream().watermark, NOW)  # Global coverage is still unknown.
 

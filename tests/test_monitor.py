@@ -560,7 +560,7 @@ class MonitorTests(unittest.TestCase):
         self.state.apply(old, NOW)
         self.state.apply(snapshot(NOW + 10, calls=("SHORT",)), NOW + 10)
         self.assertEqual([len(r) for r in self.state.rows(NOW + 10)], [1, 1])
-        self.state.rbn_status = "RBN stream: complete"
+        self.state.rbn_status = models.RbnStatus()
         for output in (views_ui.render(self.state, NOW + 10).splitlines(),
                        [text for text, _ in views_ui.screen_frame(self.state, NOW + 10, 40, 240)]):
             rows = [text for text in output if is_row(text, "SHORT") or is_row(text, "LONGCALL/P")]
@@ -568,7 +568,7 @@ class MonitorTests(unittest.TestCase):
             self.assertEqual(rows[0].index("14052.9"), rows[1].index("14052.9"))
             self.assertEqual(sum(text.startswith("Program") for text in output), 1)
             refresh = next(i for i, text in enumerate(output) if text.startswith("Refresh:"))
-            self.assertEqual(output[refresh + 1], "RBN stream: complete")
+            self.assertIn("RBN: waiting", "\n".join(output[refresh:refresh + 2]))
             self.assertLess(output.index(rows[0]), next(i for i, text in enumerate(output) if text.startswith("HISTORY (1)")))
             self.assertGreater(output.index(rows[1]), next(i for i, text in enumerate(output) if text.startswith("HISTORY (1)")))
 

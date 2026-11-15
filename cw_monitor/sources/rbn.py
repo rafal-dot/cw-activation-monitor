@@ -13,6 +13,7 @@ from urllib.parse import urlencode
 from ..config import CALL_PATTERN, RBN_URL, RBN_HIGH_TRAFFIC_WARNING
 from ..friends import FriendIndex
 from ..models import RbnSpot, SourceError
+from ..rbn_status import RbnBatch, RbnMode, RbnStatus, RbnTraffic
 from ..values import clean, frequency, receiver_call, integer_reading
 from . import http
 
@@ -66,6 +67,9 @@ class RbnLoad:
 @dataclass
 class RbnStream:
     load: RbnLoad = field(default_factory=RbnLoad)
+    traffic: RbnTraffic = field(default_factory=RbnTraffic)
+    traffic_read_at: float | None = None
+    batch: RbnBatch | None = None
     watermark: float | None = None
     spots: dict[str, RbnSpot] = field(default_factory=dict)
     sampled_ids: set[str] = field(default_factory=set)
@@ -95,7 +99,7 @@ class RbnClient:
         self.warnings: list[str] = []
         self.small_batches = small_batches if small_batches is not None else Event()
         self.streams: dict[tuple, RbnStream] = {}
-        self.status = "RBN: waiting"
+        self.status = RbnStatus()
         self.diagnostic_status = ""
         self.request_log: list[str] = []
         self.base_interval = self.poll_interval = interval
@@ -229,12 +233,12 @@ class RbnClient:
         self.diagnostic_status = ""
         self.remaining_requests = 8
         self.budget_reported = False
+        key = tuple(sorted(receivers)), max_age
         if not calls:
             self.poll_interval = self.base_interval
-            self.status = "RBN: idle (no unconfirmed activations)"
+            self.status = self._status(self.streams.get(key), receivers, RbnMode.IDLE)
             return []
         started = time.time()
-        key = tuple(sorted(receivers)), max_age
         stream = self.streams.setdefault(key, RbnStream(interval=self.base_interval))
         if ((stream.watermark is not None and stream.watermark > started)
                 or (stream.covered_until is not None and stream.covered_until > started)):
@@ -258,6 +262,8 @@ class RbnClient:
             if complete or limit == 100:
                 break
             limit = stream.load.grow()
+        # Capture the actual final shared response before the controller changes its next limit.
+        stream.batch = RbnBatch(count, limit)
         # Consecutive capped reads can cover new arrivals even while an older
         # gap remains. Only overlapping time ranges establish continuous coverage.
         if not skipped:
@@ -275,6 +281,12 @@ class RbnClient:
         sample_start = max(started - max_age, previous) if previous is not None else started - max_age
         new_count = sum(i not in stream.sampled_ids and s.time >= sample_start for i, s in stream.spots.items())
         stream.load.observe(new_count, elapsed, min(max_age, max(1.0, elapsed) + overlap), complete)
+        traffic_start = max(started - max_age, stream.traffic_read_at if stream.traffic_read_at is not None else started - max_age)
+        traffic_complete = not skipped and (count < limit or oldest <= traffic_start)
+        # Count new IDs before activator matching, including late arrivals. A live
+        # interval can be complete while the older startup history is still filling.
+        stream.traffic.observe(sum(i not in seen_before for i in stream.spots), started - traffic_start, traffic_complete)
+        stream.traffic_read_at = started
         valid = {key: spot for key, spot in rows.items() if 0 <= now - spot.time <= max_age}
         newest = max((spot.time for spot in valid.values()), default=oldest)
         new_page = any(key not in seen_before for key in valid)
@@ -312,9 +324,17 @@ class RbnClient:
         stream.spots = {i: s for i, s in stream.spots.items() if 0 <= now - s.time <= max_age}
         if stream.traffic_gap_until > now and not self.small_batches.is_set():
             self.warnings.append(RBN_HIGH_TRAFFIC_WARNING)
-        mode = "batches" if self.small_batches.is_set() else "collecting recent receptions" if previous_page_end is None and not complete else "stream"
-        self.status = f"RBN {mode}: " + " / ".join(receivers)
+        mode = RbnMode.BATCHES if self.small_batches.is_set() else RbnMode.STREAM
+        self.status = self._status(stream, receivers, mode)
         self.diagnostic_status = (f"interval={self.poll_interval:g}s rows={limit}→{stream.load.limit} "
                                   f"avg={stream.load.average} peaks={list(stream.load.peaks)}")
         selected = set(calls)
         return [s for s in stream.spots.values() if s.call in selected or self.friend_index.find(s.call) is not None]
+
+    @staticmethod
+    def _status(stream: RbnStream | None, receivers: list[str], mode: RbnMode) -> RbnStatus:
+        return RbnStatus(mode=mode, batch=stream.batch if stream else None,
+                         interval=stream.interval if stream and mode != RbnMode.IDLE else None,
+                         spotters=tuple(receivers), last=stream.traffic.last if stream else None,
+                         average_per_minute=stream.traffic.average_per_minute if stream else None,
+                         complete=stream.traffic.complete if stream else False)

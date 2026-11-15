@@ -1,150 +1,279 @@
-# CW Activation Monitor
+# CW Hunter — Python terminal monitor
 
-[![Tests](https://github.com/rafal-dot-ai/cw-activation-monitor/actions/workflows/tests.yml/badge.svg)](https://github.com/rafal-dot-ai/cw-activation-monitor/actions/workflows/tests.yml)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+Find CW activators reported by **POTA** and **WWFF**, and check whether your
+selected **Reverse Beacon Network (RBN) spotters** have heard them. Optional
+**SOTA** monitoring uses a local JSON file. A separate **Friends** list can
+alert you to callsigns heard by those spotters, independently of activations.
 
-Find CW activators reported by POTA and WWFF and check whether your selected
-Reverse Beacon Network receivers have heard them.
+## Requirements
 
-A Linux terminal monitor for **POTA, WWFF and optionally SOTA**, showing CW
-activations confirmed by **SP5GQ or SQ5J**. Requires **Python 3.10 or newer**
-and HTTPS access. No third-party libraries, account or login are required for
-POTA/WWFF. The interface and CLI help use English; reference names retain the
-language supplied by their source.
+- Linux and **Python 3.10 or newer**.
+- HTTPS access for live POTA, WWFF and RBN data.
+- No third-party Python packages or POTA/WWFF account are required.
+- An interactive terminal with Python's standard `curses` module enables the
+  incremental display. Plain-text output works when curses is unavailable.
+- Optional Friends Morse audio uses `paplay` or `aplay` from the Linux system.
 
-![CW Activation Monitor terminal demonstration](docs/terminal-demo.svg)
+The interface and CLI help use English. Names of parks, summits and areas retain
+the spelling supplied by their source.
 
-*Offline demonstration using fictional station data.*
+## Quick start
 
-- Incremental terminal display with new activation alerts and history.
-- Separate program spot age limits and RBN reception checks.
-- Adaptive polling with a smoothed traffic average and recent peak history.
-- Distance from your own QTH, in kilometres or miles, and initial azimuth.
-- Optional CSV event and diagnostic logs.
-- Optional persistent daily CSV summaries with full reference names and first/last source spots.
-- Optional SOTA import from a local JSON file.
-
-## Running
-
-All Python sources and tests are in `python/`. Run the commands below from
-that directory; relative CSV and SOTA file paths are resolved from your current
-working directory. Keep the `cw_monitor/` package alongside `pota_alert.py`:
+Open a terminal in the directory containing `cw_hunter.py` and `cw_monitor/`.
+In the full application repository this is `python/`; in a standalone Python
+repository the same files may be at its root. All commands below run from that
+directory, without an additional `cd python`.
 
 ```bash
-git clone https://github.com/rafal-dot-ai/cw-activation-monitor.git
-cd cw-activation-monitor/python
-python3 pota_alert.py --demo --qth JO91AA
+# Fictional data, without network access:
+python3 cw_hunter.py --demo --qth IO91AA
+
+# Live POTA/WWFF monitoring with your own locator and selected spotters:
+python3 cw_hunter.py --qth KO02KF --spotters SP5GQ SQ5J
+
+# One live check, then exit:
+python3 cw_hunter.py --once --qth KO02KF
+
+# Full list of options:
+python3 cw_hunter.py --help
 ```
 
-For an existing checkout, enter `python` with `cd python` from the repository
-root. Local CSV logs and their `.csv-backups/` directory belong alongside the
-scripts in `python/`; keep their filenames when restarting to restore history.
-The directory name is lowercase, including on Linux. You can also launch the
-same CLI with `python3 -m cw_monitor` from `python/`, or run
-`python3 python/pota_alert.py` from the repository root.
+Keep the complete `cw_monitor/` directory alongside the launcher. Copying only
+`cw_hunter.py` is insufficient. The alternative entry points
+`python3 -m cw_monitor` and the compatibility launcher `python3 pota_alert.py`
+run the same application.
 
-For live POTA/WWFF monitoring, supply your own QTH when you want distances:
+Relative CSV and JSON paths are resolved from your current working directory.
+Live source failures produce a nonzero exit status with `--once`.
+
+## Terminal controls
+
+| Key | Action |
+| --- | --- |
+| `r` | Refresh enabled sources and RBN, including confirmed active calls |
+| `s` | Choose sorting for ACTIVE and HISTORY |
+| `f` | Configure band, spotter and SNR filters |
+| `Space` | Acknowledge currently highlighted new/updated entries |
+| `b` | Enable targeted smaller RBN batches for the current run |
+| `q` or `Ctrl+C` | Exit, including during a slow HTTPS request |
+
+Network requests run in a background worker. Timers update locally and only
+changed terminal cells are redrawn. Manual refresh bypasses local timing and
+failure backoff while respecting a server's `Retry-After` response.
+
+Redirected output, `TERM=dumb`, `--no-clear`, `--once` and `--demo` use plain
+snapshots. For example:
 
 ```bash
-python3 pota_alert.py --qth JO91AA
+python3 cw_hunter.py --no-clear --qth KO02KF
+python3 cw_hunter.py --once --links
 ```
 
-By default the monitor fetches **POTA and WWFF**, immediately and then every
-60 seconds. SOTA currently uses an optional **local JSON file**, described
-below; it does not connect to the SOTA API.
+## Sources, activity and history
 
-Select programs or set their independent maximum spot ages:
+The default programs are **POTA and WWFF**. Their source feeds are normally
+read every 60 seconds. `--interval` changes that source interval, with a minimum
+of 60 seconds. Faster adaptive RBN reads reuse the program-source cache.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--pota-max-age` | 300 seconds | Maximum age of a POTA program spot |
+| `--sota-max-age` | 600 seconds | Maximum age of a local SOTA program spot |
+| `--wwff-max-age` | 900 seconds | Maximum age of a WWFF program spot |
+| `--rbn-max-age` | 300 seconds | Maximum age of an initial RBN confirmation |
+| `--history-max-age` | 1800 seconds | Retention after program activity ends |
+| `--timeout` | 20 seconds | Timeout of each HTTPS request |
+| `--tolerance` | 0.5 kHz | Allowed initial POTA/WWFF/SOTA versus RBN offset |
 
 ```bash
-python3 pota_alert.py --programs POTA WWFF
-python3 pota_alert.py --programs POTA
-python3 pota_alert.py --pota-max-age 300 --sota-max-age 600 --wwff-max-age 900
+python3 cw_hunter.py --programs POTA
+python3 cw_hunter.py --programs POTA WWFF --pota-max-age 300 --wwff-max-age 900
 ```
 
-| Program | Default spot age | Source |
-|---|---|---|
-| POTA | 300 s / 5 min | Public POTA HTTPS JSON |
-| SOTA | 600 s / 10 min | Local JSON file supplied with `--sota-file` |
-| WWFF | 900 s / 15 min | Public WWFF Spotline HTTPS JSON |
+An activation identity is **program + callsign + band + reference**. A change
+of band or reference creates another row; a frequency adjustment within a band
+updates the existing row. Activator callsigns retain portable prefixes/suffixes.
 
-These are the monitor's configurable freshness limits, not proof that an
-activation ended. WWFF uses a longer default because Spotline suppresses
-similar duplicate spots within a 10-minute window. See the
-[Spotline information](https://spots.wwff.co/info).
+A new activation needs a recent CW program spot and a matching RBN confirmation
+from at least one selected spotter on the same band, within the tolerance.
+Unconfirmed activations are checked again in later cycles. Once confirmed, the
+original RBN reception is retained; program activity determines ACTIVE status.
+Repeated source data does not renew its timestamp. QRT, non-CW reports and
+source expiry affect activity, while HISTORY preserves earlier observations.
+Restored records await current source data before their activity is known.
 
-Each age limit is applied consistently when selecting spots, matching a new
-entry to RBN, maintaining ACTIVE status and starting inactive history retention.
-Changing `--wwff-max-age` does not change POTA or SOTA. The separate
-`--rbn-max-age` defaults to 300 seconds and limits initial RBN confirmations
-for every program. `--new-max-age` defaults to 300 seconds and controls time
-in ACTIVE / NEW; `--history-max-age` defaults to 1800 seconds after inactivity.
-`--timeout` controls each HTTPS request timeout, default 20 seconds.
+The default sort is latest activity first, with newly detected entries given
+priority in newest-first time sorts. Sorting changes each section independently.
+Supported criteria are last activity, first detection, dB, WPM, distance and
+frequency, with ascending/descending directions.
 
-In an interactive terminal, **curses** draws only changed fields. Network
-requests run in the background. Exit with `q` or `Ctrl+C`, even during a slow
-request. Curses is part of Python's standard library; if unavailable, the
-program falls back to plain text. Redirected output, `TERM=dumb` and
-`--no-clear` produce successive text snapshots.
+## RBN packet and traffic statistics
 
-Optional event logging:
+The shared RBN stream is fetched for **1–5 selected spotters**. Its row limit
+adapts through 10, 20, 50 and 100. Busy streams can shorten the RBN interval
+from 60 to 30 and 15 seconds without increasing program-source polling.
+
+```text
+Refresh in 00:00:12 | RBN: 73/100 rows · every 15s
+CW: last 12 / 15s · avg ~42.0/min
+```
+
+- **73/100 rows:** the final shared response contained 73 records, requested
+  with a limit of 100. Intermediate limit-growth requests are not added up;
+  later targeted queries do not replace the shared packet's numbers.
+- **every 15s:** the current adaptive RBN polling interval.
+- **last 12 / 15s:** twelve newly detected CW spot IDs in the latest observation
+  window, before matching activators/Friends or applying display filters.
+- **avg:** the last five complete windows, calculated as total new spots divided
+  by total elapsed time and expressed per minute. Repeated pages do not count
+  the same spots again; late-arriving spots can still be counted.
+
+The first window uses `--rbn-max-age`; later windows cover elapsed time since
+the previous shared read, capped at that age. A complete live window can supply
+statistics while older startup history is still filling. **Collecting…** means
+no complete sample is available. **(partial)** marks an incomplete window,
+excluded from the average; **last avg** identifies a retained earlier average.
+
+A full 100/100 response remains neutral. The high-traffic warning appears only
+when a live gap is detected at the fastest cadence. **idle** retains the last
+packet without claiming continued network polling; **waiting** does not invent
+zero measurements. Statistics create no extra requests. Spotters remain visible
+in the terminal header. The footer combines fields when they fit and wraps
+longer telemetry without clipping. At fewer than 14 terminal rows, the compact
+footer prioritizes space for activations. Plain snapshots include the statistics.
+
+Press `b`, or use `--rbn-small-batches`, to allow targeted queries when needed.
+They share an eight-request budget per cycle; an exceptionally busy stream can
+still exceed coverage. The choice lasts for the current run.
+
+## Filters, sorting and colours
 
 ```bash
-python3 pota_alert.py --log-file activations.csv
-python3 pota_alert.py --log-file diagnostics.csv --log-level debug
+# Global inclusive SNR range; either bound also works independently:
+python3 cw_hunter.py --min-snr 10 --max-snr 30
+python3 cw_hunter.py --min-snr off --max-snr 12
+
+# Selected bands and a subset of the monitored spotters:
+python3 cw_hunter.py --bands 20m 40m --spotters SP5GQ SQ5J --filter-spotters SQ5J
+
+# Per-band rules replace both global bounds on that band:
+python3 cw_hunter.py --min-snr 10 --max-snr 30 --band-snr 20m:18:off
+python3 cw_hunter.py --band-snr 20m:global
+
+# Show excluded confirmations without alerts, or reset band/spotter selection:
+python3 cw_hunter.py --show-filtered
+python3 cw_hunter.py --bands all --filter-spotters all
+
+# Frequency ascending, or strongest signal first:
+python3 cw_hunter.py --sort frequency --sort-order asc
+python3 cw_hunter.py --sort db --sort-order desc
 ```
 
-Daily summary only, or both independent CSV files with four hours of history:
+Available bands are **160m, 80m, 60m, 40m, 30m, 20m, 17m, 15m, 12m, 10m, 6m,
+2m and 70cm**. A disabled per-band rule inherits the global SNR bounds; an
+enabled rule replaces both, and can explicitly leave either or both bounds off.
+SNR bounds are inclusive integers from -100 to 100 dB. At least one applicable
+spotter must satisfy all enabled bounds. Higher RBN dB means higher reported SNR.
+
+Sorting and filters are remembered across runs in
+`~/.config/cw-activation-monitor/`, or under `$XDG_CONFIG_HOME` when set to an
+absolute path. This compatibility directory keeps the previous product name.
+Use explicit `off`/`all` options to reset saved choices.
+
+Default program colours are POTA yellow, WWFF green and SOTA blue. SNR below
+10 dB is red, 10–19 dB yellow and 20 dB or more green. WPM up to 15 is green,
+16–24 yellow and above 24 red. Adjust colouring with:
 
 ```bash
-python3 pota_alert.py --summary-file daily.csv
-python3 pota_alert.py --history-max-age 14400 --bell --log-file events.csv --summary-file daily.csv
+python3 cw_hunter.py --snr-thresholds 10,20 --wpm-thresholds 15,24
+python3 cw_hunter.py --color never
 ```
 
-Examples:
+Colours are enabled automatically on supported interactive terminals;
+`--color always` forces them. Colours do not change filtering or ordering.
+Identical dB/WPM values across spotters are displayed once; different values
+retain the selected spotter order. Ages use `HH:MM:SS`.
+
+## Distance, azimuth and reference names
+
+`--qth` accepts your Maidenhead locator or `latitude,longitude` coordinates.
+`CW_ACTIVATION_QTH` can supply the default. Distance and initial azimuth use the
+reference coordinates supplied by the source; they are estimates to the
+park/summit/area location. Distances default to kilometres.
 
 ```bash
-# All three programs, with fictional data and no network access:
-python3 pota_alert.py --demo
-
-# One live POTA/WWFF check with links (exit code 1 on source errors):
-python3 pota_alert.py --once --links
-
-# Audible alert for newly confirmed entries:
-python3 pota_alert.py --bell
-
-# Keep successive text snapshots:
-python3 pota_alert.py --no-clear
+python3 cw_hunter.py --qth KO02KF --distance-unit km
+python3 cw_hunter.py --qth 52.23,20.88 --distance-unit mi
+python3 cw_hunter.py --reference-name-length 24
 ```
 
-## SOTA: local file support
+Names are otherwise shown in full when terminal space permits. Set the length
+to zero to hide names. `--park-name-length` remains a compatibility alias.
 
-Direct SOTA API access is **not enabled**. The previously used API endpoint
-now returns a deprecation notice. The current
-[SOTA API terms](https://api-db2.sota.org.uk/docs) require prior approval for
-AI-generated applications and a designated developer contact. This monitor
-makes no requests to either SOTA API endpoint. Automatic SOTA API fetching
-would need approval and verification of the approved current interface.
-
-To display SOTA entries now, supply a local JSON export from a source you
-are authorized to use:
+## CSV logs and restoration
 
 ```bash
-python3 pota_alert.py --sota-file /path/to/sota-spots.json --sota-max-age 600
-
-# Monitor only the local SOTA feed, plus RBN confirmation:
-python3 pota_alert.py --programs SOTA --sota-file /path/to/sota-spots.json
+python3 cw_hunter.py --history-max-age 14400 --bell --log-file events.csv --summary-file daily.csv
 ```
 
-Supplying `--sota-file` adds SOTA to the default POTA/WWFF selection. An
-explicit `--programs` selection takes priority. `--programs SOTA` requires
-`--sota-file`, except for `--demo`. The file is re-read every polling cycle;
-the script does not create or download it. Another authorized data producer
-may update the file, preferably by replacing it atomically to avoid a partial
-JSON read. A file error is reported without discarding previous valid data.
-Reading the same file again does not refresh spot timestamps.
+The event log appends activation events. The independent daily summary keeps
+one entry per UTC day, program, callsign, reference and band, including the
+reference name/QTH, first/last source spots and last frequency. Use
+`--log-level debug` with an event log for transport, adaptive-polling and rejected
+match details. Log paths must be different files.
 
-The preferred file format is a JSON array with these fields:
+Restart with the same paths to restore available history. Event data restores
+detailed state and retained readings; the daily summary supplies additional
+identities, names and source-time information. Restored status is checked
+against fresh program data. Neither CSV is a completed-QSO log.
+
+Log writers use sidecar locks. Stop other instances before sharing their log
+paths. Existing CSV schema upgrades retain backups in `.csv-backups/`.
+Personal CSV files, backups and Friends state are excluded by `.gitignore`;
+keep them when updating the source files.
+
+## Friends
+
+Create a UTF-8 CSV, or export one from the Android application, using this header:
+
+```csv
+callsign,first_name,last_name,comment
+G4YBU,Alex,Example,Club friend
+```
+
+```bash
+python3 cw_hunter.py --friends-file friends.csv --bell
+python3 cw_hunter.py --friends-file friends.csv --no-friends-alerts
+```
+
+The list supports up to 1000 distinct callsigns. Names and comments are optional
+and limited to 128 characters each. Base-call matching also recognizes operating
+variants such as `ON/G4YBU/P`, retaining the full received callsign for display.
+Friends alerts use the selected spotters and applicable band/spotter/SNR filters.
+
+With `--bell`, Friends audio sends **CQ CALLSIGN** in Morse, without a program
+prefix, using `paplay` or `aplay`. Defaults are 20 WPM and 750 Hz, configurable
+with `--morse-wpm` and `--morse-tone`. Other activation alerts use the terminal
+bell. Without a supported Linux audio player, the terminal bell remains the
+fallback. A terminal bell also depends on the terminal's sound settings.
+
+A separate `friends.state.json` beside `friends.csv` prevents duplicate alerts
+after restart. Override it with `--friends-state-file`. The state file is
+independent of event and daily CSV logs. The CSV is read at startup; restart
+the monitor after editing it.
+
+## Optional local SOTA feed
+
+The Python monitor imports SOTA from a local JSON file; it does not fetch a
+SOTA API. Supply a file from a data source you are authorized to use:
+
+```bash
+python3 cw_hunter.py --sota-file /path/to/sota-spots.json
+python3 cw_hunter.py --programs SOTA --sota-file /path/to/sota-spots.json
+```
+
+Supplying `--sota-file` adds SOTA to the default program selection. An explicit
+`--programs` list takes priority. The importer accepts a normalized JSON array:
 
 ```json
 [
@@ -156,591 +285,35 @@ The preferred file format is a JSON array with these fields:
     "spot_time": 1794324000,
     "reference_name": "Example summit",
     "latitude": 49.57,
-    "longitude": 19.53,
-    "remarks": "CQ"
+    "longitude": 19.53
   }
 ]
 ```
 
-This is a format example: `spot_time` must contain the actual report's Unix
-UTC timestamp. A stale example will correctly be excluded by the age filter.
-Names, coordinates and remarks are optional. An empty array means no current
-spots. Files are limited to 8 MB.
+Replace `spot_time` with the actual report's Unix UTC timestamp; an old example
+will correctly be excluded by the age limit. Names and coordinates are optional.
+SOTAwatch-style local exports are also supported, with `frequency` in MHz.
+The file is limited to 8 MB and re-read on source cycles. Updating it atomically
+avoids partial reads; rereading a record does not renew its timestamp.
 
-The importer also accepts SOTAwatch-style export fields:
-`activatorCallsign`, `associationCode`, `summitCode`, `frequency` **in MHz**,
-`mode`, `timeStamp` as an ISO UTC timestamp, `summitDetails` and `comments`.
-For normalized files, `frequency_khz` is explicitly **in kHz** and `spot_time`
-is Unix seconds. Planned alerts are not activation spots and must not be
-supplied as live spots. Deprecated API placeholder responses are rejected.
+## Tests and distribution
 
-## Table and identity
-
-The first column is **Program**, with `POTA`, `SOTA` or `WWFF`. Column order:
-
-**Program → Activator → Band → Spot kHz → RBN kHz → dB → WPM → Reference →
-Receiver → First seen → Last spot → RBN age → Distance → Azimuth → Comment**.
-
-Plain text labels the same dB column **SNR dB**. SNR, WPM and RBN age retain
-the selected receiver order; moving columns does not reorder their values.
-
-Reference means a POTA park, SOTA summit or WWFF area. The field includes the
-reference's name in parentheses when available. The former POTA-specific
-labels have become **Spot kHz**, **Last spot** and **Reference**.
-
-An entry's identity is **program + callsign + band + reference**. A station
-activating POTA and WWFF simultaneously has two separate rows. Within one
-program, a different reference or band creates a separate row. Frequency
-adjustments within a band, newer report times, names and coordinates update
-the existing entry, without resetting First seen. All timestamps use UTC.
-Activator callsigns are exact: `F5NLX/P` and `F5NLX` are separate identities.
-Receiver skimmer suffix `-#` is removed, while SSIDs such as `-2` are preserved.
-
-A new row appears only when:
-
-- The program's latest report for that identity is CW, is not marked invalid
-  or QRT, and satisfies that program's age limit.
-- SP5GQ or SQ5J reported the same callsign in CW within `--rbn-max-age`.
-- The reception is on the same band and differs from the reported frequency
-  by at most `--tolerance`, default **0.5 kHz**.
-
-Latest reports are selected by timestamp rather than JSON order. A newer
-QRT or non-CW report is applied before filtering, so it cannot revive an older
-CW spot. Changes in another program/reference do not disable this identity.
-SOTA/WWFF test reports marked TEST are also treated as inactive.
-
-**Spot kHz** is the latest frequency from the program's report. **RBN kHz**
-is the latest stored frequency among the displayed receivers, shown separately
-even when it differs. **Band** comes from the reported frequency, using POTA's
-band ranges; an unknown range is `—`. After a frequency change, stored RBN
-data describe the earlier observation rather than a new confirmation on the
-changed frequency. Frequency changes do not claim improved propagation.
-
-When both receivers are shown, dB, WPM and RBN age follow Receiver order,
-separated by `/`. The latest matching reception is chosen for each receiver,
-even if an earlier spot had better SNR.
-
-| Age column | Meaning |
-|---|---|
-| **First seen** | Time since this confirmed identity was first detected during this run; updates and returns from history never reset it. Not the activation's actual start time. |
-| **Last spot** | Age of the latest report from this row's program, using its original source timestamp. Re-fetching does not reset it. |
-| **RBN age** | Age of the stored reception, separately for each receiver. Cached confirmation never refreshes its timestamp. |
-
-Ages use **HH:MM:SS**, such as `00:12:34/00:08:07`. One hour is `01:00:00`;
-elapsed hours continue past 24 without resetting. Counters update locally
-between requests and in history. In narrow terminals, age columns may move
-below their entry.
-
-## Distance, azimuth and reference names
-
-Distance and Azimuth are adjacent, immediately before Comment. Distance uses **kilometres** by default,
-rounded to whole units, for example `1234 km`. Set your own QTH with `--qth`
-or the `CW_ACTIVATION_QTH` environment variable. Without a QTH, the monitor
-runs normally and displays `—` for distance and azimuth. A warning above the
-table remains visible for the first 30 seconds, including while the first
-request is in progress. Plain text mode prints the warning once before
-fetching data. Neither mode pauses monitoring.
+Run the offline suite from the same directory as the launcher:
 
 ```bash
-python3 pota_alert.py --qth JO91AA --distance-unit mi
-python3 pota_alert.py --qth JO91AA
-python3 pota_alert.py --qth=52.23,20.88
-export CW_ACTIVATION_QTH=JO91AA
-python3 pota_alert.py
-```
-
-`--qth` accepts a 2-, 4-, 6- or 8-character Maidenhead locator or decimal
-latitude,longitude. Use a decimal point and `--qth=-33.87,151.21` for a negative
-latitude. Locator positions use the cell centre. Miles are statute miles.
-Distance is calculated locally to the reference coordinates supplied by its
-source, not to the RBN receiver or the activator's precise operating position.
-It is a great-circle distance, not a signal path or road distance. Explicit
-latitude/longitude take priority over `grid6`/`grid4` locator centres. Missing
-coordinates show `—`; missing metadata preserves a previously known location.
-Names and coordinates do not cause extra requests. History retains them.
-
-The reference label includes its Maidenhead QTH after the name, for example
-`IT-0759 (Parco Naturale…) [JN34PX]`. Valid source locators are preserved in
-uppercase, including 4- or 8-character values when available. When only
-coordinates are supplied, the monitor derives a 6-character locator. Missing
-QTH metadata does not erase a previously known locator.
-
-Both CSV files store the reference locator in `qth`: after `name` in the daily
-summary, and after `reference` in the event log. It is independent of your own
-`--qth`. On restart, the stored locator centre provides an approximate reference
-position immediately; fresh source coordinates take priority when they arrive.
-
-**Azimuth** is the initial great-circle bearing from your QTH to the
-reference location, in whole degrees clockwise from **true north**:
-`000°` north, `090°` east, `180°` south and `270°` west. It is calculated
-locally from the same coordinates as Distance and does not depend on whether
-distance is shown in kilometres or miles. Missing coordinates and positions
-without a unique bearing (the same point, antipodes or a QTH at a pole) show
-`—`. In narrow terminals, Azimuth moves below the entry with its label,
-alongside other omitted fields as screen height permits.
-
-Full reference names are shown by default and wrap below the row when needed,
-subject to screen height. Every wrapped name line uses the main row's style:
-new entries retain black text on yellow, active entries use their normal
-style, and inactive history is dimmed. Highlight expiry and Space update the
-name lines together with the row. To truncate or hide names:
-
-```bash
-python3 pota_alert.py --reference-name-length 32
-python3 pota_alert.py --reference-name-length 0
-```
-
-The previous `--park-name-length` option remains an alias.
-
-## Display, markers and history
-
-Headers are bold, with a dim horizontal rule beneath them. At **120 terminal
-columns or more**, dim grey `│` separators distinguish the columns; narrower
-terminals use single spaces. Numeric fields are right-aligned; program,
-activator, band, reference, receiver and Comment are left-aligned. The layout
-accounts for separator widths, wide characters and wrapped Comment lines.
-In very short windows the rule is omitted to preserve room for entries.
-Plain text snapshots retain ASCII separators and numeric alignment.
-
-In the full-screen terminal, **Band** values use stable foreground colours.
-Terminals with 256 colours distinguish individual bands; basic colour
-terminals use a smaller palette. **Program** values use yellow for POTA,
-green for WWFF and blue for SOTA.
-
-Each receiver's **SNR dB** and **WPM** value has its own foreground colour:
-
-| Field | Green | Yellow | Red |
-|---|---|---|---|
-| SNR dB | 20 or more | 10–19 | Below 10 |
-| WPM | Up to 15 | 16–24 | 25 or more |
-
-SNR is signal-to-noise ratio at that receiver, rather than absolute signal
-power. These are display thresholds, not a guarantee of reception quality.
-WPM colours express a configurable speed preference. Receiver order and row
-sorting stay unchanged.
-
-```bash
-python3 pota_alert.py --wpm-thresholds 15,24 --snr-thresholds 10,20
-python3 pota_alert.py --wpm-thresholds 12,20
-python3 pota_alert.py --color never
-python3 pota_alert.py --demo --color always
-```
-
-`--color auto` is the default: enable colours for an interactive colour
-terminal, with no ANSI escapes in redirected output. It respects `NO_COLOR`
-and `TERM=dumb`. `--color always` also colours plain snapshots using ANSI;
-`--color never` disables all colours, including bands. Monochrome curses
-still uses bold, reverse video and underlines to distinguish alerts.
-
-NEW row highlights and UPD cell highlights take priority over column colours,
-and inactive history remains dimmed. Narrow layouts retain SNR/WPM colours in
-the measurement details below the row. Limited terminal palettes use
-available colours. Colour settings do not affect CSV
-contents or cause full-screen redraws.
-
-New confirmations appear in a **NEW ACTIVATION / NEW ACTIVATIONS** banner at
-the top for 60 seconds, with program, reference, frequency, receivers and SNR.
-Source errors and warnings also appear above the table. Remaining information
-and keyboard controls appear below it.
-
-New rows use **black text on yellow for 30 seconds**, configurable with
-`--highlight-seconds`. Colored highlights do not use bold, preventing themes
-from turning black text white. Monochrome terminals use bold/reverse video.
-
-The final **Comment** column contains program spot status and event markers:
-
-| Value | Meaning |
-|---|---|
-| `ACTIVE` | The last valid CW spot is within this program's age limit |
-| `INACTIVE` | The spot expired, or QRT/non-CW/invalid status was received |
-| `NEW` | This program/callsign/band/reference was detected less than a minute ago |
-| `BND` | New band for a known callsign within this program |
-| `UPD` | Frequency changed within the same identity |
-
-Markers can coexist, e.g. `ACTIVE NEW BND` or `ACTIVE NEW UPD`.
-UPD appends a description, e.g. `Spot 14052.9 → 14053.1 kHz`, for 60 seconds.
-Descriptions wrap under Comment; there is no separate UPDATED line. Changed
-frequency cells use **black underlined text on white**, without bold, while
-other cells retain their styles. Monochrome terminals use underline/reverse.
-Separators remain subdued. Space or expiry removes highlights without a clear.
-
-**Space** acknowledges current banners, markers, highlights and update
-messages, preserving data and order. Re-fetching the same record does not
-restore the highlight. New entries are highlighted normally. `--bell` rings
-once per new confirmed identity, never for ordinary updates. Space works in
-curses mode; `q` and `Ctrl+C` exit. Press **b** to allow smaller RBN batches
-if the receiver stream is truncated. This is a non-blocking choice; the
-monitor continues to update while displaying the incomplete-results warning.
-
-The table has two sections:
-
-- **ACTIVE / NEW:** active identities first detected within `--new-max-age`,
-  default **5 minutes**. This period is separate from program spot age limits.
-- **HISTORY:** older or previously archived identities. They can still be
-  **ACTIVE**. Inactive entries are dimmed and retained for
-  `--history-max-age`, default **30 minutes after activity ends**.
-
-Activity ends according to that row's own program deadline, or an explicit
-stop report, not the age of its RBN reception. A known identity remains in
-history through updates and reactivation. A temporary absence in a successful
-source response may archive it, while its last valid report remains active
-until expiry. A source failure alone does not archive its entries or renew
-their timestamps. QRT for one reference/program does not disable another.
-
-Newest entries have priority when the screen fills. History prioritizes
-active entries and newer source reports. The footer counts hidden active and
-history entries. Column widths grow with content and reset on terminal resize,
-avoiding shifting columns when entries disappear. Optional columns move below
-the row or are omitted from the table; details depend on available height.
-Frequency sources and Program remain visible in supported narrow windows.
-History is in memory only, with identity retained until exit even after an
-inactive entry becomes hidden, preventing duplicate alerts on its return.
-
-The **`HTTPS in 00:47`** countdown updates locally every second. During a
-request it shows **`HTTPS: fetching…`**. Ages, deadlines and highlights update
-between requests, even while a fetch is slow. The frame is rebuilt once per
-second and immediately after data updates, acknowledgements or resizing.
-Keyboard input is checked every 200 ms. The screen does not clear each
-minute; only changed cells are repainted. `--once`, `--demo` and `--no-clear`
-use full snapshots. `--links` adds program reference and RBN links, as space
-permits in curses mode.
-
-## Independent sources and RBN caching
-
-POTA and WWFF are fetched once per cycle, concurrently, with independent
-error handling. The SOTA file is read concurrently when enabled. A malformed
-or unavailable source produces an error while other sources continue to
-update. Last known records retain their original deadlines. A source's
-`Retry-After` pauses only that source; the others keep their normal schedule.
-RBN failures preserve source updates and cached confirmations. A single cycle
-can therefore display valid updates and a source error together. `--once`
-returns exit code 1 if any source failed.
-
-RBN now fetches a shared CW stream for the selected receivers, caches spots
-by their RBN IDs and locally intersects that cache with the activation
-callsigns requiring confirmation, across all enabled programs. With no
-suitable unconfirmed spots there are no RBN spot queries. Once confirmed,
-**program + callsign + band + reference** is remembered until exit. Frequency
-updates or new reports for it do not require another RBN confirmation.
-Unconfirmed identities are retried; a different program, band or reference
-requires a fresh matching reception. One fresh reception may match multiple
-simultaneous references/programs. Cached receptions keep their original time
-and receivers; the monitor does not continuously search for new SNR values
-or extra receivers for confirmed identities.
-
-An RBN spot confirms **signal reception**, not a completed QSO. A missing row
-means no qualifying confirmation, not proof that a station is inaudible.
-RBN's schema/version are checked. Its website interface is not a documented stable API, so changes
-may require monitor updates. The monitor publishes nothing to any service.
-
-## Adaptive RBN request size
-
-Each receiver-set/age-limit profile keeps its own request limit, smoothed
-traffic rate and recent peak history **in memory for this run**. This changes
-how data are fetched; initial RBN freshness still defaults to **5 minutes**,
-and program spot age limits and cached confirmation lifetimes are unchanged.
-
-- Requests begin at **10 rows**, with levels **10 → 20 → 50 → 100**.
-- If a full response does not cover the needed time window, the limit grows
-  immediately and the request is repeated in the same cycle. A response
-  shorter than the requested limit does not cause another increase.
-- The first read covers the entire RBN freshness window. Later reads must
-  reach the last complete read with a **15-second overlap**, bounded by the
-  freshness window. A fixed one-minute cutoff would miss data after a slow
-  request or an error. Overlapping responses are deduplicated by spot ID.
-- New IDs per actual elapsed minute update an exponential moving average
-  with weight **0.3** for the newest sample. The largest rate from the last
-  **10 complete samples** provides peak protection. The target is the larger
-  of **average × 1.5** and **peak × 1.2**, scaled to the requested window and
-  rounded up to an available row limit.
-- Growth is immediate. Shrinking requires **three complete quieter samples**
-  and proceeds one level at a time. Repeated IDs do not inflate the average.
-- A truncated response on its own is only a lower bound on traffic. It does
-  not train the average, clear remembered peaks or advance the complete-read timestamp.
-  HTTP errors likewise preserve the timestamp. Recovery covers the relevant
-  gap within the configured freshness window, and expired cached spots are
-  removed.
-
-When the **100 newest spots do not reach back one minute**, RBN polling
-automatically speeds up. The default **60 s → 30 s → 15 s** schedule reserves
-headroom based on the time span of the returned spots; a burst can move
-directly to 15 seconds. This is the minimum interval. POTA, WWFF and the local
-SOTA file keep their configured `--interval` schedule, normally 60 seconds.
-RBN-only cycles reuse source data with their original report timestamps.
-
-Overlapping fast reads accumulate in the cache. An earlier gap remains
-reported until the relevant freshness window is fully covered or the missing
-period has expired. Faster polling cannot retrieve spots already hidden
-behind the 100-row limit. Targeted smaller batches remain available.
-
-After **six complete quieter reads**, and only if the average/peak estimate
-fits the next interval with overlap, RBN slows down one step at a time toward
-`--interval`. Selected receiver/age profiles remember their own pacing.
-Without unconfirmed activations, no RBN requests are made. `Retry-After`
-pauses RBN without delaying the program sources.
-
-If **100 rows still do not cover the window**, the monitor displays an
-**incomplete stream** warning. It continues displaying valid data, but
-qualifying matches may be missing. Press **b** in curses mode to allow
-targeted batches split by callsign and receiver. That choice lasts for the
-run; batches are used when needed, while a complete stream can still be used.
-The footer shows **b: batches ON** after enabling them.
-The global stream watermark is not advanced merely because targeted
-batches succeeded. A single callsign/receiver pair can itself exceed 100;
-that remaining limitation is reported explicitly.
-
-For plain text, unattended operation or a one-shot check, opt in at startup:
-
-```bash
-python3 pota_alert.py --rbn-small-batches
-python3 pota_alert.py --once --rbn-small-batches
-```
-
-The footer shows mode, RBN polling interval, used → next row limit, average
-and peak rates, for example `RBN stream: every 30s | rows 100→100 | avg 80.0/min | peak 95.0/min`. A dash means
-no complete measurement yet. Short terminals may omit this extra status
-line; plain snapshots include it. Increasing the limit can require several
-requests with repeated rows, so adaptive fetching primarily controls payload
-size and does not guarantee lower server load on every cycle.
-
-## Optional CSV log
-
-`--log-file PATH` appends UTF-8 CSV records and writes the header once. With
-no option, no log file is created. Default level **events** records:
-
-- `NEW`: first confirmation of an identity.
-- `BAND`: a new band for an already known callsign in the same program.
-- `UPDATE`: a changed source report, frequency, metadata or reception.
-- `HISTORY`, `INACTIVE`, `ACTIVE`: actual section/activity transitions,
-  including local expiry between requests and later reactivation.
-- `SOURCE_ERROR`, `SOURCE_OK`: source error changes and recovery.
-- `RBN_BATCHES_ENABLED`: keyboard acknowledgement of smaller batches.
-
-An identical fetched report, a redraw, a countdown tick or repeated calls to
-the lifecycle code do not generate duplicate events. New source timestamps
-are updates even if frequency is unchanged. BAND is the event for that new
-entry, rather than an additional duplicate NEW event.
-
-Column order is:
-
-```text
-timestamp_utc,source_time_utc,event,program,callsign,reference,qth,band,spot_khz,rbn_khz,receivers,snr_db,wpm,detail
-```
-
-`timestamp_utc` is the event recording time; `source_time_utc` is the original
-program report time. Multiple receivers use `/` in matching order.
-The log preserves timestamps rather than saving a constantly changing
-age. Standard CSV quoting handles commas and quotes; CSV can be read by
-spreadsheets or processed from the terminal. The log is flushed after each
-record and shared safely between terminal and polling threads. A sidecar
-lock, e.g. `.events.csv.lock`, prevents another monitor process from opening
-the same event log for writing. Locks are acquired before schema upgrades.
-
-**debug** adds source read counts/errors, `RBN_QUERY` request limits and
-returned counts, `RBN_FETCH` adaptive status, and `RBN_REJECT` explanations
-(no recent report, receiver, age, band or frequency mismatch). It can produce
-records each polling cycle and is intended for diagnosing missing entries:
-
-```bash
-python3 pota_alert.py --log-file diagnostics.csv --log-level debug
-```
-
-Existing logs use the current header. The preceding schema without `qth` is
-upgraded automatically, adding an empty column and preserving the original
-file in `.csv-backups/`. Other headers or inaccessible files fail clearly at
-startup. A write failure during operation is reported above the table and leaves
-monitoring running. Errors still present when closing the logs are also
-printed to standard error and cause exit code **2**. The file's parent
-directory must already exist. Both CSV readers accept UTF-8 with or without
-a byte-order mark (BOM).
-On restart, saved activation events restore recent terminal history as
-described below.
-
-## Optional daily CSV summary
-
-`--summary-file PATH` maintains a separate UTF-8 CSV, independent of
-`--log-file`. Enable either file or both. It uses the same confirmed CW
-activations as the monitor and makes **no additional network requests**.
-Unconfirmed spots and explicit QRT/non-CW reports are not added to the summary.
-
-There is **one row per UTC day + program + callsign + reference + band**.
-Frequency changes within a band update that row. Another program, callsign,
-reference, band or UTC day creates another row. All days are kept in the same
-file. Rows are sorted by day and identity.
-
-| CSV column | Meaning |
-|---|---|
-| `date_utc` | UTC calendar date of the source report |
-| `first_seen_utc` | Earliest source report timestamp observed for this identity and UTC day |
-| `last_seen_utc` | Latest source report timestamp observed for this identity and UTC day |
-| `program` | POTA, SOTA or WWFF |
-| `callsign` | Exact activator callsign, including portable suffixes |
-| `reference` | Park, summit or nature-area reference |
-| `name` | Full reference name, independent of terminal truncation settings |
-| `qth` | Reference Maidenhead locator, usually 6 characters; blank if unavailable |
-| `band` | Band, such as 20m or 40m; an unrecognized range uses the frequency-based identity |
-| `last_frequency_khz` | Program frequency from the latest source report |
-
-Names come from POTA `name`/`parkName`, WWFF `reference_name`, or the local
-SOTA file's `reference_name`/`summitDetails`. Commas, quotes and Unicode names
-are preserved using normal CSV quoting. A missing name leaves the cell blank;
-a later report can fill it. Missing metadata never erases an existing name.
-
-First/last times are **source timestamps**, rather than detection times,
-poll times or RBN reception times. Re-fetching the same report, a local timer
-tick, moving a row to history, inactivity and a failed source do not advance
-Last seen. Confirmed ACTIVE entries in history still update the summary when
-a new source report arrives. The interval between First seen and Last seen
-is the span of observed reports, not a measurement of continuous activity or
-the activation's actual start/end. If a station returns to the same place and
-band on the same day, the visits are combined into that day's row.
-
-The day also comes from the source timestamp. Re-fetching a pre-midnight
-report after midnight keeps it in the preceding UTC day. A post-midnight
-source report creates the next day's row.
-
-On startup, the existing summary is validated and loaded. Its first sightings
-and old days are retained, newer observations update the same keys, and an
-older report cannot roll back Last seen or its frequency. Valid duplicate
-keys in an existing file are merged. Recent rows also supplement restored
-terminal history. A summary alone does not identify a confirming RBN receiver.
-
-Updates replace the CSV atomically after a complete polling snapshot; identical
-data do not rewrite it. On a write failure, the old CSV stays intact, the
-monitor shows **SUMMARY ERROR**, and the next snapshot retries the pending
-changes. An invalid existing file is rejected without overwriting it. Its
-parent directory must already exist.
-
-A small hidden lock file, e.g. `.daily.csv.lock`, prevents two monitor
-processes from overwriting the same summary. It can remain after exit; the
-actual lock is released when the process closes it. Generated CSV, lock and
-temporary files are ignored by Git. Event and summary output must use
-different files.
-
-## Resume after restarting
-
-Use the same log paths and history limit when restarting:
-
-```bash
-python3 pota_alert.py --history-max-age 14400 --bell --log-file events.csv --summary-file daily.csv
-```
-
-Existing files are read before fetching live data. `events.csv` restores
-activation identities, detection times, source timestamps, receiver details
-and activity transitions. `daily.csv` supplies full reference names and
-first/last source observations, including confirmed identities missing from
-the event log. Either file can also be used on its own.
-
-Restored entries appear in **HISTORY** with **RESTORED** in Comment. Their
-initial status is **UNKNOWN** until the program source is read successfully.
-Old entries do not trigger NEW highlights or the bell. A fresh program report
-can mark an entry ACTIVE while keeping it in HISTORY. A saved confirmation
-from a currently selected receiver is reused; entries available only in the
-daily summary still need an RBN confirmation. New bands and references remain
-separate identities.
-
-The configured per-program spot age and `--history-max-age` apply to saved
-timestamps, including time while the monitor was stopped. Restarting does not
-extend retention or update the daily summary. Invalid event records are
-skipped with a warning; malformed CSV syntax and incompatible headers produce
-a startup error.
-
-The CSV files store reference locators rather than exact coordinates. Distance
-and Azimuth can be calculated from the stored QTH immediately; without a saved
-QTH they remain `—` until coordinates arrive in a fresh source report.
-RBN age remains `—` for restored receptions until an
-actual timestamped reception is available. Without a NEW/BAND event, the
-detection time for First seen is unknown and also shown as `—`; daily source
-timestamps are preserved with their original meaning. Demo mode ignores
-saved real entries.
-
-## Options
-
-```bash
-python3 pota_alert.py --help
-```
-
-| Option | Default | Meaning |
-|---|---|---|
-| `--programs POTA SOTA WWFF` | POTA WWFF | Programs; SOTA requires its local file |
-| `--sota-file PATH` | none | Local SOTA spots JSON; adds SOTA unless programs are explicitly selected |
-| `--pota-max-age SECONDS` | 300 | Maximum POTA report age |
-| `--sota-max-age SECONDS` | 600 | Maximum SOTA report age |
-| `--wwff-max-age SECONDS` | 900 | Maximum WWFF report age |
-| `--spotters CALL [CALL ...]` | SP5GQ SQ5J | Either receiver is sufficient |
-| `--interval SECONDS` | 60 | Program source interval, minimum 60 s; RBN adapts down to 15 s |
-| `--rbn-max-age SECONDS` | 300 | Maximum initial RBN reception age |
-| `--history-max-age SECONDS` | 1800 | Inactive history retention after the program's deadline/stop |
-| `--new-max-age SECONDS` | 300 | Duration in ACTIVE / NEW |
-| `--highlight-seconds SECONDS` | 30 | Strong new row highlight duration |
-| `--reference-name-length CHARS` | full name | Name limit; 0 hides names; alias `--park-name-length` |
-| `--qth LOCATOR` or `--qth=LAT,LON` | CW_ACTIVATION_QTH, otherwise unset | Home position for distance calculations; CLI overrides environment |
-| `--distance-unit {km,mi}` | km | Kilometres or statute miles |
-| `--color {auto,always,never}` | auto | Colour policy; never disables band, program and signal colours |
-| `--snr-thresholds LOW,HIGH` | 10,20 | SNR below LOW red, below HIGH yellow, otherwise green |
-| `--wpm-thresholds SLOW,MEDIUM` | 15,24 | WPM up to SLOW green, up to MEDIUM yellow, otherwise red |
-| `--tolerance KHZ` | 0.5 | Initial frequency matching tolerance |
-| `--timeout SECONDS` | 20 | Timeout per HTTPS request |
-| `--rbn-small-batches` | off | Allow targeted batches if the adaptive receiver stream is incomplete |
-| `--log-file PATH` | none | Append event records to a UTF-8 CSV log |
-| `--log-level {events,debug}` | events | Include fetch and rejection diagnostics with debug |
-| `--summary-file PATH` | none | Maintain a persistent daily CSV with full names, first/last source spots and last frequency |
-| `--links` | off | Show program reference and RBN links |
-| `--bell` | off | Bell for new confirmed identities |
-| `--no-clear` | off | Plain text snapshots instead of curses |
-| `--once` | off | One cycle, exit code 1 on source failure |
-| `--demo` | off | Offline fictional examples, all three programs by default |
-
-The source interval is measured between source-cycle starts when requests
-finish within it. The countdown tracks the next source or RBN cycle.
-Snapshots are dated after fetching and ages are checked again for display.
-Keep the system clock correct.
-
-## Sources and portability
-
-- POTA: <https://api.pota.app/spot/activator>.
-- WWFF: <https://spots.wwff.co/static/spots.json>; integration details at
-  <https://spots.wwff.co/info>.
-- SOTA: user-supplied local JSON only; API terms at
-  <https://api-db2.sota.org.uk/docs>.
-- RBN: <https://www.reversebeacon.net/main.php> and its `/spots.php` JSON.
-
-To use another computer, clone this repository, download a ZIP from
-[Releases](https://github.com/rafal-dot-ai/cw-activation-monitor/releases), or copy:
-
-- `python/pota_alert.py`
-- the entire `python/cw_monitor/` directory, including its subdirectories
-- `README.md`
-- `LICENSE`
-
-Preserve the `python/` subdirectory when copying files or extracting a ZIP.
-The entry script imports the package; copying only `pota_alert.py` is no
-longer sufficient. To restore your own history, also copy your CSV files
-separately; archives do not include personal logs.
-
-If SOTA is enabled, also copy your own JSON feed or configure its new local
-path. That personal feed is not included in the ZIP. The offline demo needs
-no extra file and never accesses any network source.
-
-## Tests
-
-From the repository root:
-
-```bash
-cd python
 python3 -m unittest discover -s tests -v
 ```
 
-GitHub Actions runs the offline tests and demo on Linux with Python 3.10,
-3.12 and 3.14. Tests use controlled data and do not call live radio services.
-The demo smoke test writes both the event log and daily summary.
+The tests use fixtures and a local Linux pseudoterminal, without live service
+requests. To update another computer, copy both launchers and the **entire**
+`cw_monitor/` directory. Include `README.md`, `LICENSE` and `.gitignore`; the
+`tests/` directory is useful for verification but not required at runtime.
+Preserve your local logs, Friends CSV/state and user preferences separately.
 
-## Code layout
-
-The entry script delegates to the `cw_monitor` package. Source clients,
-activation state, CSV persistence and terminal presentation have separate
-modules. See [Architecture and review notes](docs/architecture.md) for the
-module map, reliability fixes and performance considerations.
+In the development workspace, `python/` is the canonical source tree;
+`cw-hunter-github/` is its standalone publication copy. Update the canonical
+source first, then copy the changed source and test files to the publication
+directory. Both copies use the same README, license and ignore rules.
 
 ## License
 

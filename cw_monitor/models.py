@@ -7,6 +7,7 @@ from enum import Enum
 import math
 
 from .geo import location_locator
+from .rbn_status import RbnStatus
 from .values import activation_key
 
 
@@ -84,7 +85,7 @@ class Snapshot:
     inactive: set[tuple] = field(default_factory=set)
     failed_programs: set[str] = field(default_factory=set)
     errors: list[str] = field(default_factory=list)
-    rbn_status: str = ""
+    rbn_status: RbnStatus | None = None
     friend_receptions: list[RbnSpot] = field(default_factory=list)
 
 

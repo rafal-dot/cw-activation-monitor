@@ -1,16 +1,39 @@
-.github/
+# Local Python caches and environments
 __pycache__/
 *.py[cod]
 .venv/
+venv/
+
+# Personal logs, contacts, state, backups and credentials
 *.csv
-*.pyc
+.csv-backups/
+*.state.json
+*.adi
+*.adif
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.bak
+*.backup
 .*.lock
 .*.tmp
-*.log
-*.zip
 .env
 .env.*
+*.jks
+*.keystore
+
+# Generated distributions and local tooling
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.jar
+*.apk
+*.aab
 .DS_Store
+.github/
 .agents/
 .aws/
 .codex/

@@ -8,6 +8,7 @@ import time
 
 from .config import PROGRAMS
 from .models import ActivationSpot, ChangedField, Entry, Match, Snapshot, latest_reception, update_description
+from .rbn_status import RbnStatus
 from .restore import startup_entries
 from .sources.programs import join_spots
 from .storage.session import get_log, get_summary
@@ -38,7 +39,7 @@ class Monitor:
         self.loading = False
         self.next_poll_at: float | None = None  # Monotonic time, as in the worker schedule.
         self.rank = len(self.entries)
-        self.rbn_status = ""
+        self.rbn_status = RbnStatus()
         self.batch_mode = args.rbn_small_batches
         self.qth_warning_until = time.monotonic() + 30
         self.restore_count = len(self.entries)
@@ -194,7 +195,7 @@ class Monitor:
         self.spots, self.updated_at = list(current.values()), snapshot.time
         self.source_error(" | ".join(snapshot.errors), now)
         self.warnings, self.loading = snapshot.warnings, False
-        if snapshot.rbn_status:
+        if snapshot.rbn_status is not None:
             self.rbn_status = snapshot.rbn_status
         self.refresh_lifecycle(now)
         for entry in self.entries.values():

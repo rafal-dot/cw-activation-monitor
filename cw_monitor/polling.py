@@ -210,5 +210,7 @@ class Poller:
         if self.log:
             for detail in self.rbn.request_log:
                 self.log.record("RBN_QUERY", now, detail=detail, debug=True)
-            self.log.record("RBN_FETCH", now, detail=self.rbn.status + " | " + self.rbn.diagnostic_status + " | " + " | ".join(warnings + errors), debug=True)
+            status = self.rbn.status
+            detail = f"RBN {status.mode.value}: " + " / ".join(status.spotters)
+            self.log.record("RBN_FETCH", now, detail=detail + " | " + self.rbn.diagnostic_status + " | " + " | ".join(warnings + errors), debug=True)
         return Snapshot(list(latest.values()), list(cached), warnings, now, inactive, failed, errors, self.rbn.status, [r for r in received if friend_index.find(r.call) is not None])
