@@ -24,6 +24,8 @@ def read_pota(payload: object, now: float, max_age: float) -> tuple[list[Activat
             freq = frequency(item["frequency"])
             if not CALL_PATTERN.fullmatch(call) or not re.fullmatch(r"[A-Z0-9]+-\d+", park):
                 raise ValueError("Invalid callsign or park")
+            if when > now:
+                continue  # Future data cannot hide a valid earlier report.
             key = activation_key(call, freq, park)
             if key not in latest or when >= latest[key][0]:
                 latest[key] = (when, item, freq)
@@ -75,10 +77,14 @@ def read_program(payload: object, program: str, now: float, max_age: float) -> t
             pattern = r"[A-Z0-9]+/[A-Z0-9]+-\d+" if program == "SOTA" else r"[A-Z0-9]+-\d+"
             if not CALL_PATTERN.fullmatch(call) or not re.fullmatch(pattern, reference):
                 raise ValueError("Invalid callsign or reference")
-            freq = frequency(item["frequency_khz"]) if "frequency_khz" in item else frequency(item["frequency"]) * 1000
-            when = float(item["spot_time"]) if "spot_time" in item else timestamp(item["timeStamp"])
-            if not math.isfinite(when):
+            freq = frequency(item["frequency_khz"]) if "frequency_khz" in item else frequency(frequency(item["frequency"]) * 1000)
+            if isinstance(item.get("spot_time"), bool):
                 raise ValueError("Invalid timestamp")
+            when = float(item["spot_time"]) if "spot_time" in item else timestamp(item["timeStamp"])
+            if not math.isfinite(when) or when < 0 or when > 253402300799.999:
+                raise ValueError("Invalid timestamp")
+            if when > now:
+                continue
             normalized.append((ActivationSpot(call, reference, freq, when,
                                " ".join(clean(item.get("reference_name") or item.get("summitDetails") or "").split()),
                                park_coordinates(item), program, reference_qth(item)),

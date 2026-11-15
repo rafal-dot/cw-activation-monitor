@@ -29,6 +29,15 @@ def frequency(value: object) -> float:
     return result
 
 
+def integer_reading(value: object, low: int, high: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise ValueError("Invalid integer reading")
+    number = float(value)
+    if not math.isfinite(number) or not number.is_integer() or not low <= number <= high:
+        raise ValueError("Invalid integer reading")
+    return int(number)
+
+
 def timestamp(value: str) -> float:
     # POTA can supply UTC timestamps without a trailing Z or offset.
     result = datetime.fromisoformat(value.replace("Z", "+00:00"))

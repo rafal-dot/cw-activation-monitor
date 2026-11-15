@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 from queue import Queue
 from threading import Event, Thread
@@ -12,6 +11,8 @@ import time
 from .config import MAX_RESPONSE_BYTES, POTA_URL, WWFF_URL
 from .models import ActivationSpot, Match, RbnSpot, Snapshot, SourceError
 from .restore import startup_entries
+from .snr import resolve_snr
+from .values import band_for
 from .sources import http
 from .sources.programs import read_pota, read_program
 from .sources.rbn import RbnClient
@@ -31,17 +32,29 @@ class Poller:
         self.confirmed = {key: list(entry.match.receptions)
                           for key, entry in startup_entries(args)[0].items() if entry.match.receptions}
         self.source_spots: dict[str, list[ActivationSpot]] = {}
+        self.server_retry_at: dict[str, float] = {}
+        self.recent_spots: dict[tuple, ActivationSpot] = {}
         self.retry_at: dict[str, float] = {}
+        self.failure_counts: dict[str, int] = {}
         self.source_errors: dict[str, str] = {}
         self.next_source_at: float | None = None
         self.cached_failed: set[str] = set()
         self.cached_warnings: list[str] = []
         self.cached_inactive: set[tuple] = set()
 
-    def poll(self, started: float) -> Snapshot:
-        if self.next_source_at is None or started >= self.next_source_at:
+    def backoff(self, service: str, error: Exception, base: float) -> None:
+        if service == "SOTA":
+            return  # Local file repair does not create service traffic.
+        count = min(8, self.failure_counts.get(service, 0) + 1)
+        self.failure_counts[service] = count
+        delay = max(min(900, base * 2 ** (count - 1)), getattr(error, "retry_after", 0))
+        self.server_retry_at[service] = time.monotonic() + max(0, getattr(error, "retry_after", 0))
+        self.retry_at[service] = time.monotonic() + delay
+
+    def poll(self, started: float, force: bool = False) -> Snapshot:
+        if force or self.next_source_at is None or started >= self.next_source_at:
             self.next_source_at = started + self.args.interval
-            return self.fetch()
+            return self.fetch(force=True) if force else self.fetch()
         return self.fetch(refresh_sources=False)
 
     def next_poll_at(self, started: float, finished: float) -> float:
@@ -56,8 +69,8 @@ class Poller:
                     data = source.read(MAX_RESPONSE_BYTES + 1)
                 if len(data) > MAX_RESPONSE_BYTES:
                     raise ValueError("file exceeds 8 MB")
-                payload = json.loads(data)
-            except (OSError, ValueError, UnicodeError) as exc:
+                payload = http.strict_json(data)
+            except (OSError, ValueError, UnicodeError, RecursionError) as exc:
                 raise SourceError(f"SOTA file: {clean(exc)}") from exc
         else:
             payload = http.get_json(POTA_URL if program == "POTA" else WWFF_URL, self.args.timeout)
@@ -65,7 +78,7 @@ class Poller:
         age = max_spot_age(self.args, program)
         return read_pota(payload, now, age) if program == "POTA" else read_program(payload, program, now, age)
 
-    def read_sources(self) -> tuple[list[ActivationSpot], set[str], list[str], list[str], set[tuple]]:
+    def read_sources(self, force: bool = False) -> tuple[list[ActivationSpot], set[str], list[str], list[str], set[tuple]]:
         args = self.args
         # Daemon threads preserve immediate q/Ctrl+C exit during slow requests.
         results = Queue()
@@ -78,9 +91,9 @@ class Poller:
                 results.put((program, None, exc))
 
         for program in args.programs:
-            if time.monotonic() < self.retry_at.get(program, 0):
+            if time.monotonic() < (self.server_retry_at if force else self.retry_at).get(program, 0):
                 failed.add(program)
-                errors.append(self.source_errors[program] + " (Retry-After)")
+                errors.append(self.source_errors[program] + (" (manual refresh deferred by Retry-After)" if force else " (retry delayed)"))
                 spots.extend(self.source_spots.get(program, []))
             else:
                 pending_sources.append(program)
@@ -94,11 +107,14 @@ class Poller:
                 self.source_errors[program] = message
                 if self.log:
                     self.log.record("SOURCE_READ_ERROR", time.time(), detail=message, debug=True)
-                self.retry_at[program] = time.monotonic() + getattr(exc, "retry_after", 0)
+                self.backoff(program, exc, args.interval)
                 spots.extend(self.source_spots.get(program, []))
                 continue
             selected, skipped, stopped = data
             self.source_errors.pop(program, None)
+            self.failure_counts.pop(program, None)
+            self.retry_at.pop(program, None)
+            self.server_retry_at.pop(program, None)
             if self.log:
                 self.log.record("SOURCE_READ", time.time(), detail=f"{program}: CW={len(selected)}, skipped={skipped}, inactive={len(stopped)}", debug=True)
             self.source_spots[program] = selected
@@ -108,10 +124,10 @@ class Poller:
                 warnings.append(f"{program}: skipped {skipped} invalid entries")
         return spots, failed, warnings, errors, inactive
 
-    def fetch(self, refresh_sources: bool = True) -> Snapshot:
+    def fetch(self, refresh_sources: bool = True, force: bool = False) -> Snapshot:
         args = self.args
         if refresh_sources:
-            spots, failed, warnings, errors, inactive = self.read_sources()
+            spots, failed, warnings, errors, inactive = self.read_sources(force=True) if force else self.read_sources()
             self.cached_failed = set(failed)
             self.cached_warnings = list(warnings)
             self.cached_inactive = set(inactive)
@@ -119,7 +135,7 @@ class Poller:
             spots = [p for values in self.source_spots.values() for p in values]
             failed, warnings, inactive = set(self.cached_failed), list(self.cached_warnings), set(self.cached_inactive)
             errors = [self.source_errors[program]
-                      + (" (Retry-After)" if time.monotonic() < self.retry_at.get(program, 0) else "")
+                      + (" (retry delayed)" if time.monotonic() < (self.server_retry_at if force else self.retry_at).get(program, 0) else "")
                       for program in args.programs if program in failed]
         latest = {}
         now = time.time()
@@ -129,17 +145,26 @@ class Poller:
             key = p.key
             if key not in latest or p.time >= latest[key].time:
                 latest[key] = p
-        pending = [p for key, p in latest.items() if key not in self.confirmed or args.min_snr is not None]
+        self.recent_spots.update(latest)
+        self.recent_spots = {key: spot for key, spot in self.recent_spots.items()
+                             if key not in inactive and spot.program in args.programs and 0 <= now - spot.time <= max_spot_age(args, spot.program)}
+        if force:
+            latest = {**self.recent_spots, **latest}
+        friend_calls = {friend.call for friend in args.friends} if args.friends_alerts else set()
+        pending = [p for key, p in latest.items() if force or key not in self.confirmed or any(value is not None for value in resolve_snr(args.min_snr, args.max_snr, args.band_snr, band_for(p.frequency))) or args.filter_spotters is not None]
         received = []
         try:
-            if time.monotonic() < self.retry_at.get("RBN", 0):
-                errors.append(self.source_errors["RBN"] + " (Retry-After)")
+            if time.monotonic() < (self.server_retry_at if force else self.retry_at).get("RBN", 0):
+                errors.append(self.source_errors["RBN"] + (" (manual refresh deferred by Retry-After)" if force else " (retry delayed)"))
             else:
-                received = self.rbn.fetch(sorted({p.call for p in pending}), args.spotters, args.rbn_max_age)
+                received = self.rbn.fetch(sorted({p.call for p in pending} | friend_calls), args.spotters, args.rbn_max_age)
                 warnings.extend(self.rbn.warnings)
+                self.failure_counts.pop("RBN", None)
+                self.retry_at.pop("RBN", None)
+                self.server_retry_at.pop("RBN", None)
         except SourceError as exc:
             self.source_errors["RBN"] = "RBN: " + clean(exc)
-            self.retry_at["RBN"] = time.monotonic() + exc.retry_after
+            self.backoff("RBN", exc, max(15, self.rbn.poll_interval))
             errors.append(self.source_errors["RBN"])
         now = time.time()
         by_call: dict[str, list[RbnSpot]] = {}
@@ -183,4 +208,4 @@ class Poller:
             for detail in self.rbn.request_log:
                 self.log.record("RBN_QUERY", now, detail=detail, debug=True)
             self.log.record("RBN_FETCH", now, detail=self.rbn.status + " | " + " | ".join(warnings + errors), debug=True)
-        return Snapshot(list(latest.values()), list(cached), warnings, now, inactive, failed, errors, self.rbn.status)
+        return Snapshot(list(latest.values()), list(cached), warnings, now, inactive, failed, errors, self.rbn.status, [r for r in received if r.call in friend_calls])

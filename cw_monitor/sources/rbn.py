@@ -10,9 +10,9 @@ from threading import Event
 import time
 from urllib.parse import urlencode
 
-from ..config import RBN_URL
+from ..config import CALL_PATTERN, RBN_URL
 from ..models import RbnSpot, SourceError
-from ..values import clean, frequency, receiver_call
+from ..values import clean, frequency, receiver_call, integer_reading
 from . import http
 
 
@@ -72,6 +72,7 @@ class RbnStream:
     covered_until: float | None = None
     interval: float = 60
     quiet_intervals: int = 0
+    batch_cursor: int = 0
 
 
 class RbnClient:
@@ -82,6 +83,8 @@ class RbnClient:
     """
 
     def __init__(self, timeout: float, small_batches: Event | None = None, interval: float = 60):
+        self.remaining_requests = 8
+        self.budget_reported = False
         self.timeout = timeout
         self.version = ""
         self.fields: list[str] = []
@@ -133,12 +136,15 @@ class RbnClient:
     def _request(self, calls: list[str] | None, receivers: list[str], max_age: float,
                  limit: int) -> tuple[dict[str, RbnSpot], int, int]:
         for attempt in range(2):
+            if not self._has_budget():
+                return {}, 100, 1
             if not self.version:
                 self.initialize()
             params = {"h": self.version, "cde": ",".join(receivers),
                       "ma": math.ceil(max_age), "m": self.cw_mode, "s": 0, "r": limit}
             if calls is not None:
                 params["cdx"] = ",".join(calls)
+            self.remaining_requests -= 1
             data = http.get_json(RBN_URL + "/spots.php?" + urlencode(params), self.timeout)
             if not isinstance(data, dict):
                 raise SourceError("RBN: expected a JSON object")
@@ -166,11 +172,13 @@ class RbnClient:
                     receiver = receiver_call(str(item["de"]))
                     if (calls is not None and call not in calls) or receiver not in receivers:
                         continue
+                    if not CALL_PATTERN.fullmatch(call) or not CALL_PATTERN.fullmatch(receiver) or isinstance(item["epoch"], bool):
+                        raise ValueError("Invalid call or timestamp")
                     when = float(item["epoch"])
-                    if not math.isfinite(when) or when < 0:
+                    if not math.isfinite(when) or not 0 <= when <= 253402300799.999:
                         raise ValueError("Invalid timestamp")
                     result[str(spot_id)] = RbnSpot(call, receiver, frequency(item["freq"]), when,
-                                                  int(item["db"]), int(item["wpm"]))
+                                                  integer_reading(item["db"], -100, 100), integer_reading(item["wpm"], 0, 200))
                 except (KeyError, TypeError, ValueError, OverflowError):
                     skipped += 1
             if skipped:
@@ -183,25 +191,36 @@ class RbnClient:
             return result, len(raw), skipped
         raise AssertionError("Unreachable")
 
+    def _has_budget(self) -> bool:
+        if self.remaining_requests > 0:
+            return True
+        if not self.budget_reported:
+            self.warnings.append("RBN: 8-request budget reached; remaining batches deferred; results may be incomplete")
+        self.budget_reported = True
+        return False
+
     def _query(self, calls: list[str], receivers: list[str], max_age: float) -> dict[str, RbnSpot]:
+        if not self._has_budget():
+            return {}
         result, count, skipped = self._request(calls, receivers, max_age, 100)
         if count >= 100:
             if len(calls) > 1:
                 middle = len(calls) // 2
-                return {**self._query(calls[:middle], receivers, max_age),
-                        **self._query(calls[middle:], receivers, max_age)}
-            if len(receivers) > 1:
-                merged = {}
+                result.update(self._query(calls[:middle], receivers, max_age))
+                result.update(self._query(calls[middle:], receivers, max_age))
+            elif len(receivers) > 1:
                 for receiver in receivers:
-                    merged.update(self._query(calls, [receiver], max_age))
-                return merged
-            self.warnings.append(f"RBN: 100-spot limit reached for {calls[0]} / {receivers[0]}; "
-                                 "results may be incomplete even in smaller batches")
+                    result.update(self._query(calls, [receiver], max_age))
+            else:
+                self.warnings.append(f"RBN: 100-spot limit reached for {calls[0]} / {receivers[0]}; "
+                                     "results may be incomplete even in smaller batches")
         return result
 
     def fetch(self, calls: list[str], receivers: list[str], max_age: float) -> list[RbnSpot]:
         self.warnings = []
         self.request_log = []
+        self.remaining_requests = 8
+        self.budget_reported = False
         if not calls:
             self.poll_interval = self.base_interval
             self.status = "RBN: idle (no unconfirmed activations)"
@@ -216,6 +235,7 @@ class RbnClient:
         target = max(started - max_age, stream.watermark - overlap) if stream.watermark is not None else started - max_age
         window = max(1.0, started - target)
         previous = stream.watermark
+        seen_before = set(stream.spots)
         limit = stream.load.start(window)
         while True:
             rows, count, skipped = self._request(None, receivers, max_age, limit)
@@ -244,7 +264,12 @@ class RbnClient:
         sample_start = max(started - max_age, previous) if previous is not None else started - max_age
         new_count = sum(i not in stream.sampled_ids and s.time >= sample_start for i, s in stream.spots.items())
         stream.load.observe(new_count, elapsed, min(max_age, max(1.0, elapsed) + overlap), complete)
-        self.adjust_interval(stream, count, max(0, now - oldest), complete, max_age)
+        valid = {key: spot for key, spot in rows.items() if 0 <= now - spot.time <= max_age}
+        newest = max((spot.time for spot in valid.values()), default=oldest)
+        new_page = any(key not in seen_before for key in valid)
+        # Delivery latency is not the arrival rate; unchanged pages are not new bursts.
+        span = newest - min((spot.time for spot in valid.values()), default=newest)
+        self.adjust_interval(stream, len(valid) if new_page else 0, span, complete, max_age)
         if complete:
             stream.watermark = started
             stream.sampled_ids = set(stream.spots)
@@ -253,8 +278,16 @@ class RbnClient:
                                  "earlier spots may be missing; press b for smaller batches "
                                  "or use --rbn-small-batches in text mode")
             if self.small_batches.is_set():
-                for start in range(0, len(calls), 20):
-                    stream.spots.update(self._query(calls[start:start + 20], receivers, max_age))
+                first = stream.batch_cursor % len(calls)
+                ordered = sorted(calls)
+                rotated = ordered[first:] + ordered[:first]
+                groups = [rotated[start:start + 20] for start in range(0, len(calls), 20)]
+                for offset in range(len(groups)):
+                    if not self._has_budget():
+                        break
+                    # Advance inside a group too: a saturated early call must not starve its neighbours.
+                    stream.batch_cursor = (first + offset * 20 + 1) % len(calls)
+                    stream.spots.update(self._query(groups[offset], receivers, max_age))
                 self.warnings = [w for w in self.warnings if not w.startswith("RBN stream incomplete")]
         now = time.time()
         stream.spots = {i: s for i, s in stream.spots.items() if 0 <= now - s.time <= max_age}

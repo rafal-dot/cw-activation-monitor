@@ -85,6 +85,7 @@ class Snapshot:
     failed_programs: set[str] = field(default_factory=set)
     errors: list[str] = field(default_factory=list)
     rbn_status: str = ""
+    friend_receptions: list[RbnSpot] = field(default_factory=list)
 
 
 @dataclass

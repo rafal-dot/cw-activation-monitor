@@ -664,7 +664,7 @@ class AdaptiveScheduleTests(unittest.TestCase):
         for when in (15, 30, 45, 60, 75):
             data = self.poll(when)
             self.assertEqual(data.failed_programs, {"POTA"})
-            self.assertIn("Retry-After", data.errors[0])
+            self.assertIn("retry delayed", data.errors[0])
         self.assertEqual([call.args[0] for call in self.source.call_args_list].count("POTA"), 1)
         recovered = self.poll(120)
         self.assertEqual(recovered.failed_programs, set())
@@ -678,10 +678,24 @@ class AdaptiveScheduleTests(unittest.TestCase):
         delayed = self.poll(60)
         self.assertEqual(self.rbn.call_count, 1)
         self.assertEqual(self.source.call_count, 4)
-        self.assertIn("Retry-After", delayed.errors[0])
+        self.assertIn("retry delayed", delayed.errors[0])
         self.assertEqual(self.poller.next_poll_at(60, 62), 120)
         self.poll(120)
         self.assertEqual(self.rbn.call_count, 2)
+
+    def test_failure_without_retry_after_backs_off_independently_and_success_resets_it(self):
+        def source(program):
+            if program == "POTA" and self.clock in {0, 60, 240}:
+                raise models.SourceError("HTTP 503")
+            return self.read_source(program)
+        self.source.side_effect = source
+        for when in (0, 60, 120, 180, 240, 300):
+            self.poll(when)
+        attempts = [call.args[0] for call in self.source.call_args_list]
+        self.assertEqual(attempts.count("POTA"), 5)  # 120 skipped, success at 180 resets the delay.
+        self.assertEqual(attempts.count("WWFF"), 6)
+        self.assertNotIn("POTA", self.poller.failure_counts)
+        self.assertNotIn("POTA", self.poller.source_errors)
 
     def test_confirming_all_targets_does_not_postpone_the_next_source_refresh(self):
         def rbn_fetch(calls, receivers, age):

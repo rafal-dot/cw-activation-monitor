@@ -18,6 +18,7 @@ from .ui.colors import colors_enabled
 from .ui.views import render, screen_frame
 from .values import clean
 from .sorting import SortOrder
+from .friend_audio import announce as announce_friends
 
 
 def demo_data(now: float, receivers: list[str], programs: list[str] | None = None) -> tuple[list[ActivationSpot], list[RbnSpot]]:
@@ -64,7 +65,8 @@ def run_plain(args: argparse.Namespace) -> int:
             now = time.time()
             new = state.apply(snapshot, now)
             failed = bool(snapshot.errors)
-            if new and args.bell and interactive:
+            played = announce_friends(state)
+            if (new or state.new_friends and not played) and args.bell and interactive:
                 print("\a", end="", flush=True)
         except SourceError as exc:
             failed, retry_after = True, exc.retry_after
@@ -81,12 +83,16 @@ def run_plain(args: argparse.Namespace) -> int:
 def poll_worker(args: argparse.Namespace, events: Queue, stop: Event, small_batches: Event | None = None) -> None:
     """Run network polling in one worker; keep terminal I/O on the main thread."""
     poller = Poller(args, small_batches)
+    refresh = getattr(args, "_refresh_requested", None)
     while not stop.is_set():
         started = time.monotonic()
         retry_after = 0.0
         events.put(("loading", None))
         try:
-            events.put(("snapshot", poller.poll(started)))
+            forced = refresh is not None and refresh.is_set()
+            if forced:
+                refresh.clear()
+            events.put(("snapshot", poller.poll(started, force=True) if forced else poller.poll(started)))
         except SourceError as exc:
             retry_after = exc.retry_after
             events.put(("error", str(exc)))
@@ -95,8 +101,14 @@ def poll_worker(args: argparse.Namespace, events: Queue, stop: Event, small_batc
         finished = time.monotonic()
         delay = max(0, poller.next_poll_at(started, finished) - finished, retry_after)
         events.put(("scheduled", finished + delay))
-        if stop.wait(delay):
-            return
+        if refresh is None:
+            if stop.wait(delay):
+                return
+        else:
+            deadline = time.monotonic() + delay
+            while not stop.is_set() and time.monotonic() < deadline:
+                if refresh.wait(min(.2, max(0, deadline - time.monotonic()))):
+                    break
 
 
 def run_terminal(screen, args: argparse.Namespace) -> int:
@@ -107,6 +119,7 @@ def run_terminal(screen, args: argparse.Namespace) -> int:
     display, state = CursesDisplay(screen, colors=colors_enabled(args.color)), Monitor(args)
     layout = ColumnLayout()
     events, stop, small_batches = Queue(), Event(), Event()
+    args._refresh_requested = Event()
     worker = Thread(target=poll_worker, args=(args, events, stop, small_batches), daemon=True)
     worker.start()
     next_frame_at, last_size = 0.0, None
@@ -130,8 +143,15 @@ def run_terminal(screen, args: argparse.Namespace) -> int:
                     state.next_poll_at = data
                 elif kind == "snapshot":
                     new = state.apply(data, now)
-                    if new and args.bell:
+                    played = announce_friends(state)
+                    if (new or state.new_friends and not played) and args.bell:
                         display.bell()
+            audio = getattr(args, "_friends_audio", None)
+            if audio is not None:
+                error = audio.error()
+                if error:
+                    state.friends_audio_error = clean(error)
+                    changed = True
             height, width = screen.getmaxyx()
             tick = time.monotonic()
             if changed or (height, width) != last_size or tick >= next_frame_at:
@@ -147,17 +167,28 @@ def run_terminal(screen, args: argparse.Namespace) -> int:
                     if isinstance(selected, SortOrder):
                         state.set_sort(selected)
                     else:
+                        previous = state.snr_filter
                         state.set_filter(selected)
+                        if (previous.minimum, previous.maximum, previous.bands, previous.spotters, previous.per_band) != (selected.minimum, selected.maximum, selected.bands, selected.spotters, selected.per_band):
+                            audio = getattr(args, "_friends_audio", None)
+                            if audio is not None:
+                                audio.close()
+                                del args._friends_audio
                 if menu.closed:
                     menu = None
                 if key != -1:
                     next_frame_at = 0
                 continue
+            if key in (ord("r"), ord("R")) and not state.loading:
+                args._refresh_requested.set()
+                state.loading = True
+                state.next_poll_at = None
+                next_frame_at = 0
             if key in (ord("s"), ord("S")):
                 menu = SortMenu(state.sort)
                 next_frame_at = 0
             if key in (ord("f"), ord("F")):
-                menu = FilterMenu(state.snr_filter)
+                menu = FilterMenu(state.snr_filter, args.spotters)
                 next_frame_at = 0
             if key == ord(" "):
                 state.acknowledge(time.time())
@@ -174,6 +205,18 @@ def run_terminal(screen, args: argparse.Namespace) -> int:
 
 
 def run(args: argparse.Namespace) -> int:
+    try:
+        return _run(args)
+    finally:
+        audio = getattr(args, "_friends_audio", None)
+        if audio is not None:
+            audio.close(wait=bool(args.once and sys.exc_info()[0] is None))
+            error = audio.error()
+            if error:
+                print(clean(error), file=sys.stderr)
+
+
+def _run(args: argparse.Namespace) -> int:
     fullscreen = (not (args.once or args.demo or args.no_clear)
                   and sys.stdout.isatty() and sys.stdin.isatty()
                   and os.environ.get("TERM", "dumb") != "dumb")

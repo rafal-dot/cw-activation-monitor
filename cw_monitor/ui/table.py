@@ -5,7 +5,7 @@ from __future__ import annotations
 from ..geo import azimuth_text, distance_text
 from ..models import ChangedField, Entry, Match, latest_reception, update_description
 from ..values import age_text, band_for, clean
-from ..filtering import accepts_snr
+from ..filtering import filter_reasons
 
 
 HEADERS = ["", "Activator", "Reference", "Spot kHz", "Spotters", "SNR dB", "WPM", "RBN age", "RBN kHz", "Band", "Status", "Comment",
@@ -51,15 +51,17 @@ def _measurement_summary(values: list[str]) -> str:
 
 def row_values(entry: Entry, match: Match, now: float, history: bool = False,
                park_name_length: int | None = None, qth: tuple[float, float] | None = None,
-               distance_unit: str = "km", minimum_snr: int | None = None) -> list[str]:
-    filtered = not accepts_snr(match.receptions, minimum_snr)
+               distance_unit: str = "km", minimum_snr: int | None = None,
+               bands: frozenset[str] | None = None, spotters: frozenset[str] | None = None, maximum_snr: int | None = None, per_band=None) -> list[str]:
+    reasons = filter_reasons(match, minimum_snr, bands, spotters, maximum_snr, per_band)
+    filtered = bool(reasons)
     marker = ("UPD" if now < entry.updated_until else
               ("BND" if entry.previous_bands else ">>>") if not history and now < entry.new_until else "")
     status = "UNKNOWN" if entry.awaiting_source else "ACTIVE" if entry.active_match(now) else "INACTIVE"
     keywords = []
     if filtered:
         marker = ""
-        keywords.append("FILTERED")
+        keywords.append("FILTERED:" + "+".join(reasons))
     if not filtered and 0 <= now - entry.created_at < 60 and now < entry.new_until:
         keywords.append("NEW")
     if entry.previous_bands and now < entry.new_until:

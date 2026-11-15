@@ -25,8 +25,10 @@ MAX_RESPONSE_BYTES = 8_000_000
 UTC = timezone.utc
 
 
-CALL_PATTERN = re.compile(r"[A-Z0-9]+(?:/[A-Z0-9]+)*(?:-\d+)?")
+CALL_PATTERN = re.compile(r"(?=.{1,64}$)[A-Z0-9]+(?:/[A-Z0-9]+)*(?:-\d+)?")
 
+
+COMMON_BANDS = ("160m", "80m", "60m", "40m", "30m", "20m", "17m", "15m", "12m", "10m", "6m", "2m", "70cm")
 
 BANDS = (
     (135.7, 137.8, "2190m"), (472, 479, "630m"), (501, 504, "560m"),

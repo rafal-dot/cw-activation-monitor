@@ -14,7 +14,9 @@ from .storage.session import get_log, get_summary
 from .values import clean, max_spot_age
 from .sorting import SortOrder, ordered_rows
 from .storage.preferences import save_sort, save_filter
-from .filtering import SnrFilter, accepts_snr
+from .filtering import SnrFilter
+from .friends import FriendTracker
+from .storage.friends import FriendHistory
 
 
 class Monitor:
@@ -42,8 +44,17 @@ class Monitor:
         self.restore_count = len(self.entries)
         self.sort = SortOrder.resolve(args.sort, args.sort_order)
         self.sort_error = getattr(args, "sort_error", "")
-        self.snr_filter = SnrFilter(args.min_snr, args.show_filtered)
+        self.snr_filter = SnrFilter(args.min_snr, args.show_filtered, args.bands, args.filter_spotters, args.max_snr, args.band_snr)
         self.filter_error = getattr(args, "filter_error", "")
+        history = None
+        if args.friends_file is not None and not args.demo:
+            if not hasattr(args, "_friend_history"):
+                args._friend_history = FriendHistory(args.friends_state_file)
+            history = args._friend_history
+        self.friend_history = history
+        self.friends = FriendTracker(history.read() if history else ())
+        self.new_friends = []
+        self.friends_audio_error = ""
         self._acknowledge_filter(time.time())
 
     def set_sort(self, order: SortOrder) -> None:
@@ -52,16 +63,23 @@ class Monitor:
 
     def _acknowledge_filter(self, now: float) -> None:
         for entry in self.entries.values():
-            if not entry.alerted and accepts_snr(entry.match.receptions, self.snr_filter.minimum):
+            if not entry.alerted and self.snr_filter.accepts(entry.match):
                 entry.alerted = True
                 self.log_entry("FILTER_ACK", entry, now, "revealed by filter setting; no alert")
 
     def set_filter(self, value: SnrFilter) -> None:
-        changed = self.snr_filter.minimum != value.minimum
+        changed = (self.snr_filter.minimum, self.snr_filter.maximum, self.snr_filter.bands, self.snr_filter.spotters, self.snr_filter.per_band) != (value.minimum, value.maximum, value.bands, value.spotters, value.per_band)
         self.snr_filter = value
-        self.args.min_snr, self.args.show_filtered = value.minimum, value.show_filtered
+        self.args.min_snr, self.args.max_snr = value.minimum, value.maximum
+        self.args.show_filtered = value.show_filtered
+        self.args.band_snr = value.per_band
+        self.args.bands, self.args.filter_spotters = value.bands, value.spotters
         if changed:
-            self._acknowledge_filter(time.time())
+            now = time.time()
+            self._acknowledge_filter(now)
+            self.friends.acknowledge_filters(now, self.args)
+            if self.friend_history:
+                self.friend_history.write(self.friends.markers())
         self.filter_error = save_filter(value)
 
     def qth_warning(self) -> str:
@@ -72,7 +90,7 @@ class Monitor:
     def log_entry(self, event: str, entry: Entry, now: float, detail: str = "") -> None:
         if self.log:
             if not entry.alerted:
-                detail = (detail + " | " if detail else "") + "snr-filter=pending"
+                detail = (detail + " | " if detail else "") + "filter=pending"
             self.log.record(event, now, entry.match, detail, entry.spot_time)
 
     def archive(self, entry: Entry, now: float) -> None:
@@ -88,6 +106,9 @@ class Monitor:
     def apply(self, snapshot: Snapshot, now: float) -> list[Match]:
         args = self.args
         self.refresh_lifecycle(now)
+        self.new_friends = self.friends.observe(snapshot.friend_receptions, now, args)
+        if self.friend_history:
+            self.friend_history.write(self.friends.markers())
         current: dict[tuple, ActivationSpot] = {}
         for p in snapshot.spots:
             if 0 <= now - p.time <= max_spot_age(args, p.program):
@@ -129,7 +150,7 @@ class Monitor:
                 bands = self.station_bands.setdefault((match.call, match.program), set())
                 previous_bands = tuple(sorted(bands)) if key[1] not in bands else ()
                 bands.add(key[1])
-                qualifies = accepts_snr(match.receptions, self.snr_filter.minimum)
+                qualifies = self.snr_filter.accepts(match)
                 entry = Entry(match, deadlines, self.rank, now + 60 if qualifies else 0,
                               now + args.highlight_seconds if qualifies else 0, alerted=qualifies,
                               created_at=now, spot_time=latest.time,
@@ -178,10 +199,10 @@ class Monitor:
         self.refresh_lifecycle(now)
         for entry in self.entries.values():
             if (not entry.alerted and entry.active_match(now) is not None
-                    and accepts_snr(entry.match.receptions, self.snr_filter.minimum)):
+                    and self.snr_filter.accepts(entry.match)):
                 entry.alerted = True
                 entry.new_until, entry.flash_until = now + 60, now + args.highlight_seconds
-                self.log_entry("ALERT", entry, now, "first qualifying SNR")
+                self.log_entry("ALERT", entry, now, "first qualifying filters")
                 new.append(entry.match)
         if self.summary:
             self.summary.flush()
@@ -189,6 +210,7 @@ class Monitor:
 
     def acknowledge(self, now: float) -> None:
         """Dismiss current highlights without changing entries, deadlines or order."""
+        self.friends.acknowledge_new(now)
         for entry in self.entries.values():
             entry.new_until = min(entry.new_until, now)
             entry.flash_until = min(entry.flash_until, now)
@@ -221,7 +243,7 @@ class Monitor:
         active, history = [], []
         for entry in self.entries.values():
             if (not include_filtered and not self.snr_filter.show_filtered
-                    and not accepts_snr(entry.match.receptions, self.snr_filter.minimum)):
+                    and not self.snr_filter.accepts(entry.match)):
                 continue
             match = entry.active_match(now)
             if match:
@@ -229,9 +251,9 @@ class Monitor:
             elif (entry.awaiting_source and entry.inactive_since is None) or (entry.inactive_since is not None
                            and 0 <= now - entry.inactive_since <= self.args.history_max_age):
                 history.append((entry, entry.match))
-        return (ordered_rows(active, self.sort, self.args.qth, now, self.snr_filter.minimum),
-                ordered_rows(history, self.sort, self.args.qth, now, self.snr_filter.minimum))
+        return (ordered_rows(active, self.sort, self.args.qth, now, self.snr_filter.minimum, self.snr_filter.bands, self.snr_filter.spotters, self.snr_filter.maximum, self.snr_filter.per_band),
+                ordered_rows(history, self.sort, self.args.qth, now, self.snr_filter.minimum, self.snr_filter.bands, self.snr_filter.spotters, self.snr_filter.maximum, self.snr_filter.per_band))
 
     def filtered_count(self, now: float) -> int:
-        return sum(not accepts_snr(match.receptions, self.snr_filter.minimum)
+        return sum(not self.snr_filter.accepts(match)
                    for group in self.rows(now, include_filtered=True) for _, match in group)

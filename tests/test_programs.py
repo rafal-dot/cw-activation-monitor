@@ -207,7 +207,7 @@ class MultiSourcePollerTests(unittest.TestCase):
             second = poller.fetch()
             self.assertEqual(calls.count(config.POTA_URL), 1)
             self.assertEqual(calls.count(config.WWFF_URL), 2)
-            self.assertIn("Retry-After", second.errors[0])
+            self.assertIn("retry delayed", second.errors[0])
             clock[0] = 120
             poller.fetch()
         self.assertEqual(calls.count(config.POTA_URL), 2)

@@ -25,7 +25,7 @@ def get_summary(args: argparse.Namespace) -> DailySummary | None:
 
 def close_logs(args: argparse.Namespace | None) -> list[str]:
     errors = []
-    for label, name in (("SUMMARY", "_daily_summary"), ("LOG", "_event_log")):
+    for label, name in (("SUMMARY", "_daily_summary"), ("LOG", "_event_log"), ("FRIENDS", "_friend_history")):
         writer = getattr(args, name, None)
         if writer is None:
             continue

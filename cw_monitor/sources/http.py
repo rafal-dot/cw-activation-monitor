@@ -38,6 +38,7 @@ def get_text(url: str, timeout: float) -> str:
                     pass
         if not math.isfinite(delay):
             delay = 0
+        delay = min(delay, 86400)
         if exc.fp is not None:
             exc.close()
         raise SourceError(f"HTTP {exc.code}: {url.split('?')[0]}", delay) from exc
@@ -45,8 +46,14 @@ def get_text(url: str, timeout: float) -> str:
         raise SourceError(f"Connection to {url.split('?')[0]}: {clean(exc)}") from exc
 
 
+def strict_json(text: str | bytes) -> object:
+    def invalid_constant(value: str):
+        raise ValueError(f"Non-standard JSON number: {value}")
+    return json.loads(text, parse_constant=invalid_constant)
+
+
 def get_json(url: str, timeout: float) -> object:
     try:
-        return json.loads(get_text(url, timeout))
-    except ValueError as exc:
+        return strict_json(get_text(url, timeout))
+    except (ValueError, RecursionError) as exc:
         raise SourceError(f"Invalid JSON: {url.split('?')[0]}") from exc

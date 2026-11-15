@@ -137,7 +137,7 @@ class AdaptiveFetchTests(unittest.TestCase):
         before = self.stream().load.average, tuple(self.stream().load.peaks)
         self.feed.now += 60
         for i in range(130):
-            self.feed.add(i, NOW + 2 + i / 3, call="BUSY")
+            self.feed.add(i, NOW - 10 + i / 2, call="BUSY")
         self.assertEqual(self.fetch(), [])
         self.assertEqual(self.stream().watermark, NOW)
         self.assertEqual((self.stream().load.average, tuple(self.stream().load.peaks)), before)
@@ -159,6 +159,36 @@ class AdaptiveFetchTests(unittest.TestCase):
         self.fetch()
         self.assertEqual(self.client.poll_interval, 15)
         self.assertTrue(any("incomplete" in w for w in self.client.warnings))
+
+    def test_delayed_dense_pages_shorten_to_thirty_then_fifteen_seconds(self):
+        for i in range(150):
+            self.feed.add(f"first{i}", NOW - 40 - i * .52, call="BUSY")
+        self.fetch()
+        self.assertEqual(self.client.poll_interval, 30)
+        self.assertIn("every 30s", self.client.status)
+        self.feed.now += 30
+        for i in range(150):
+            self.feed.add(f"next{i}", self.feed.now - 40 - i * .2, call="BUSY")
+        self.fetch()
+        self.assertEqual(self.client.poll_interval, 15)
+        self.assertIn("every 15s", self.client.status)
+
+    def test_repeated_dense_page_does_not_restart_acceleration_after_clock_advances(self):
+        for i in range(150):
+            self.feed.add(i, NOW - 40 - i * .52, call="BUSY")
+        self.fetch()
+        self.assertEqual(self.client.poll_interval, 30)
+        self.feed.now += 30
+        self.fetch()
+        self.assertEqual(self.client.poll_interval, 30)
+        self.assertIsNone(self.stream().load.average)
+
+    def test_full_raw_page_with_only_one_usable_record_does_not_trigger_acceleration(self):
+        self.feed.add("one", NOW)
+        parsed = self.client._request(None, ["SP5GQ"], 300, 100)[0]
+        with patch.object(self.client, "_request", return_value=(parsed, 100, 0)):
+            self.fetch()
+        self.assertEqual(self.client.poll_interval, 60)
 
     def test_overlapping_fast_reads_fill_future_window_without_concealing_the_old_gap(self):
         self.fetch()

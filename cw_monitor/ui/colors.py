@@ -7,7 +7,7 @@ import re
 import sys
 
 
-PROGRAM_COLORS = {"POTA": "yellow", "WWFF": "green", "SOTA": "blue"}
+PROGRAM_COLORS = {"POTA": "yellow", "WWFF": "green", "SOTA": "blue", "FRND": "red"}
 COLOR_FIELDS = {5: "snr", 6: "wpm", 15: "program"}
 ANSI_FOREGROUNDS = {"red": "31", "yellow": "33", "green": "32", "blue": "94"}
 
@@ -55,7 +55,9 @@ def measurement_spans(text: str, snr_limits: tuple[int, int],
 def ansi_text(text: str, style: str = "normal") -> str:
     """Apply ANSI only after layout; NEW and changed cells override column colours."""
     attributes = ["2" if style == "history" else ""] * len(text)
-    if style != "new":
+    if style in ("friend", "friend_banner"):
+        attributes = ["1;31"] * len(text)
+    elif style != "new":
         for begin, end, color in getattr(text, "color_spans", ()):
             for index in range(max(0, begin), min(len(text), end)):
                 attributes[index] = ("2;" if style == "history" else "") + ANSI_FOREGROUNDS[color]

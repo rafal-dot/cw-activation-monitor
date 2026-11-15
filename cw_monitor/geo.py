@@ -85,15 +85,22 @@ def park_coordinates(item: dict) -> tuple[float, float] | None:
     return locator_coordinates(qth) if qth else None
 
 
-def distance_text(origin: tuple[float, float] | None,
-                  destination: tuple[float, float] | None, unit: str) -> str:
+def distance_km(origin: tuple[float, float] | None,
+                destination: tuple[float, float] | None) -> float | None:
     if origin is None or destination is None:
-        return "—"
+        return None
     lat1, lon1 = map(math.radians, origin)
     lat2, lon2 = map(math.radians, destination)
     a = (math.sin((lat2 - lat1) / 2) ** 2
          + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2)
-    km = 6371.0088 * 2 * math.asin(math.sqrt(min(1.0, max(0.0, a))))
+    return 6371.0088 * 2 * math.asin(math.sqrt(min(1.0, max(0.0, a))))
+
+
+def distance_text(origin: tuple[float, float] | None,
+                  destination: tuple[float, float] | None, unit: str) -> str:
+    km = distance_km(origin, destination)
+    if km is None:
+        return "—"
     return f"{km / 1.609344 if unit == 'mi' else km:.0f} {unit}"
 
 

@@ -190,11 +190,15 @@ class RbnClientTests(unittest.TestCase):
         client = self.client()
         client.small_batches.set()
         with patch.object(http, "get_json", side_effect=get):
+            first = client.fetch(["IU1PZC", "YO5BDL"], ["SP5GQ", "SQ5J"], 300)
+            self.assertLessEqual(len(queries), 8)
+            self.assertTrue(any("budget" in w for w in client.warnings))
             result = client.fetch(["IU1PZC", "YO5BDL"], ["SP5GQ", "SQ5J"], 300)
         self.assertEqual({(r.call, r.receiver) for r in result},
                          {(c, r) for c in ("IU1PZC", "YO5BDL") for r in ("SP5GQ", "SQ5J")})
         self.assertEqual([int(q["r"][0]) for q in queries[:4]], [10, 20, 50, 100])
-        self.assertEqual(len(queries), 11)
+        self.assertLessEqual(len(queries), 16)
+        self.assertTrue(first)
 
     def test_single_pair_limit_emits_warning(self):
         data = {"ver_h": "v1", "spots": {str(i): raw_rbn() for i in range(100)}}

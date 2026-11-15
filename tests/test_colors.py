@@ -114,8 +114,8 @@ class CursesValueColorTests(unittest.TestCase):
             with patch.object(terminal.curses, 'doupdate'):
                 display.draw([(text, 'normal')])
             initialized.append(display.value_attributes[color])
-        self.assertEqual(len(set(initialized)), 3)
-        self.assertEqual(screen.addstr.call_args_list[-1].args[3], display.value_attributes['blue'])
+        self.assertEqual(len(set(initialized)), 4)
+        self.assertEqual(screen.addstr.call_args_list[-1].args[3], display.value_attributes['red'])
 
     def test_new_and_update_override_value_colours_and_history_stays_dim(self):
         screen, display = self.display()

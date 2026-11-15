@@ -11,7 +11,7 @@ from .config import CALL_PATTERN, PROGRAMS
 from .geo import locator_coordinates
 from .models import Entry, Match, RbnSpot
 from .storage.session import get_log, get_summary
-from .values import band_for, frequency, max_spot_age, timestamp
+from .values import band_for, frequency, max_spot_age, timestamp, integer_reading
 
 
 def startup_entries(args: argparse.Namespace) -> tuple[dict[tuple, Entry], int]:
@@ -59,7 +59,7 @@ def startup_entries(args: argparse.Namespace) -> tuple[dict[tuple, Entry], int]:
                 for receiver, rbn_freq, snr, wpm in zip(*columns):
                     if not CALL_PATTERN.fullmatch(receiver):
                         raise ValueError("invalid spotter")
-                    reception = RbnSpot(call, receiver, frequency(rbn_freq), None, int(snr), int(wpm))
+                    reception = RbnSpot(call, receiver, frequency(rbn_freq), None, integer_reading(snr, -100, 100), integer_reading(wpm, 0, 200))
                     if receiver in args.spotters:
                         receptions.append(reception)
                 receptions.sort(key=lambda r: args.spotters.index(r.receiver))
@@ -85,7 +85,7 @@ def startup_entries(args: argparse.Namespace) -> tuple[dict[tuple, Entry], int]:
                             entry.spot_deadlines = {reference: source_time + max_spot_age(args, program)}
                     if event in {"ALERT", "FILTER_ACK"}:
                         entry.alerted = True
-                    elif "snr-filter=pending" in raw["detail"]:
+                    elif "filter=pending" in raw["detail"]:  # Also matches legacy snr-filter=pending.
                         entry.alerted = False
                     if event == "INACTIVE":
                         entry.eligible = False

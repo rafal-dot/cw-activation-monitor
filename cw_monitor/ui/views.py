@@ -16,7 +16,7 @@ from ..values import age_text, band_for, clean, max_spot_age
 from .table import COMMENT_LEGEND, FREQUENCY_COLUMNS, HEADERS, NUMERIC_FIELDS, TABLE_FIELDS, comment_legend, row_values
 from .layout import ColumnLayout, HighlightedText, cell_width, compact_values, fit_column, wrap_cells
 from .colors import ansi_text, measurement_spans, value_spans
-from ..filtering import accepts_snr
+from ..filtering import filter_reasons
 if TYPE_CHECKING:
     from ..monitor import Monitor
 
@@ -59,10 +59,14 @@ def reports(state: Monitor) -> list[str]:
                       + (f" Awaiting source data: {pending}." if pending else ""))
     if state.restore_skipped:
         result.append(f"WARNING: skipped {state.restore_skipped} invalid event log records during restore")
+    if state.friend_history and state.friend_history.error:
+        result.append("FRIENDS HISTORY: " + clean(state.friend_history.error))
+    if state.friends_audio_error:
+        result.append("FRIENDS AUDIO: " + clean(state.friends_audio_error))
     return result + ["WARNING: " + clean(w) for w in state.warnings]
 
 
-def new_banner(active: list[tuple[Entry, Match]], now: float, minimum_snr: int | None = None) -> str:
+def new_banner(active: list[tuple[Entry, Match]], now: float, minimum_snr: int | None = None, bands: frozenset[str] | None = None, spotters: frozenset[str] | None = None, maximum_snr: int | None = None, per_band=None) -> str:
     descriptions = [f"{m.call} {m.program} {','.join(m.references)} | "
                     + (f"NEW BAND: {'/'.join(e.previous_bands)} → {band_for(m.frequency)} | "
                        if e.previous_bands else "")
@@ -71,7 +75,7 @@ def new_banner(active: list[tuple[Entry, Match]], now: float, minimum_snr: int |
                        if m.frequency != max(m.receptions, key=lambda r: r.time).frequency else "")
                     + " | "
                     + ", ".join(f"{r.receiver} {r.snr} dB" for r in m.receptions)
-                    for e, m in active if now < e.new_until and accepts_snr(m.receptions, minimum_snr)]
+                    for e, m in active if now < e.new_until and not filter_reasons(m, minimum_snr, bands, spotters, maximum_snr, per_band)]
     if not descriptions:
         return "NEW: —"
     title = "NEW ACTIVATION" if len(descriptions) == 1 else "NEW ACTIVATIONS"
@@ -99,12 +103,37 @@ def limits_text(args: argparse.Namespace) -> str:
 
 
 def filter_status(state: Monitor, now: float, compact: bool = False) -> str:
-    if state.snr_filter.minimum is None:
-        return "Filter: Off"
     count = state.filtered_count(now)
-    if compact:
-        return f"SNR≥{state.snr_filter.minimum} {'Shown' if state.snr_filter.show_filtered else 'Hidden'}:{count}"
-    return state.snr_filter.label + f" | {'Filtered (shown)' if state.snr_filter.show_filtered else 'Hidden'}: {count}"
+    if state.snr_filter.minimum is None and state.snr_filter.maximum is None and state.snr_filter.bands is None and state.snr_filter.spotters is None and not any(rule.enabled for rule in state.snr_filter.per_band.values()):
+        return state.snr_filter.label
+    bands = sum(rule.enabled for rule in state.snr_filter.per_band.values())
+    label = state.snr_filter.label + (f" | SNR bands: {bands}" if bands else "")
+    return label + f" | {'Filtered (shown)' if state.snr_filter.show_filtered else 'Hidden'}: {count}"
+
+
+def friend_lines(state: Monitor, now: float, phase: str | None = None) -> list[str]:
+    active = state.friends.active(now, state.args)
+    active = [row for row in active if phase is None or (now < row.new_until) == (phase == "new")]
+    active.sort(key=lambda row: (now >= row.new_until, -row.new_until if now < row.new_until else 0, -row.latest.time, row.key))
+    if not active:
+        return []
+    result = [f"FRIENDS ({len(active)})"]
+    for row in active:
+        latest = row.latest
+        text = ("FRND NEW: " if now < row.new_until else "FRND: ") + row.friend.call
+        text += f" | {row.key[1]} | {latest.frequency:,.1f} kHz | {age_text(now - latest.time)} ago | "
+        text += "/".join(f"{r.snr} dB {r.wpm} WPM ({r.receiver})" for r in row.readings)
+        if row.friend.name:
+            text += " | " + row.friend.name
+        if row.friend.comment:
+            text += " | " + row.friend.comment
+        result.append(clean(text).replace("\n", " "))
+    return result
+
+
+def friend_banner(state: Monitor, now: float) -> str:
+    rows = [row for row in state.friends.active(now, state.args) if now < row.new_until]
+    return f"FRND ({len(rows)}): " + " · ".join(row.friend.call for row in rows[:4]) if rows else ""
 
 
 def render(state: Monitor, now: float, color: bool = False) -> str:
@@ -114,16 +143,19 @@ def render(state: Monitor, now: float, color: bool = False) -> str:
     clock = datetime.fromtimestamp(now, UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
     count = sum(0 <= now - p.time <= max_spot_age(args, p.program) for p in state.spots)
     lines = [f"{'/'.join(args.programs)} CW → RBN | {clock}" + (" | DEMO — FICTIONAL DATA" if args.demo else ""),
-             new_banner(active, now, args.min_snr)]
+             new_banner(active, now, args.min_snr, args.bands, args.filter_spotters, args.max_snr, args.band_snr)]
     for entry, match in active:
-        if now < entry.flash_until and accepts_snr(match.receptions, args.min_snr):
+        if now < entry.flash_until and state.snr_filter.accepts(match):
             lines.append(f"ALERT: {match.call} — heard by "
                          + ", ".join(s.receiver for s in match.receptions))
     lines.extend(reports(state))
+    if friend_banner(state, now):
+        lines.insert(1, ansi_text(friend_banner(state, now), "friend_banner") if color else friend_banner(state, now))
+    lines.extend(ansi_text(line, "friend") if color else line for line in friend_lines(state, now, "new")[1:])
     groups = [("ACTIVE", active, False), ("HISTORY", history, True)]
     group_rows = []
     for _, items, historical in groups:
-        values = [row_values(e, m, now, historical, args.park_name_length, args.qth, args.distance_unit, args.min_snr)
+        values = [row_values(e, m, now, historical, args.park_name_length, args.qth, args.distance_unit, args.min_snr, args.bands, args.filter_spotters, args.max_snr, args.band_snr)
                   for e, m in items]
         group_rows.append([[row[i] for i in TABLE_FIELDS] for row in [HEADERS] + values])
     widths = [max(cell_width(row[i]) for rows in group_rows for row in rows) for i in range(len(TABLE_FIELDS))]
@@ -148,7 +180,7 @@ def render(state: Monitor, now: float, color: bool = False) -> str:
                         if now < entry.updated_until and FREQUENCY_COLUMNS.get(field) in entry.updated_fields:
                             highlights.append((offset + len(part) - len(part.lstrip()), offset + len(part.rstrip())))
                         offset += len(part) + 3
-                    style = ("new" if not historical and now < entry.flash_until and accepts_snr(entry.match.receptions, args.min_snr) else
+                    style = ("new" if not historical and now < entry.flash_until and state.snr_filter.accepts(entry.match) else
                              "history" if entry.active_match(now) is None else "normal")
                     text = ansi_text(HighlightedText(text, highlights, color_spans=spans), style)
                 lines.append(text)
@@ -157,6 +189,8 @@ def render(state: Monitor, now: float, color: bool = False) -> str:
                     header_shown = True
         else:
             lines.append("No entries.")
+        if not historical:
+            lines.extend(ansi_text(line, "friend") if color else line for line in friend_lines(state, now, "old")[1:])
         for entry, match in items:
             if args.links:
                 lines.extend(links_for(match, args, historical))
@@ -189,7 +223,7 @@ def screen_frame(state: Monitor, now: float, height: int, width: int, layout: Co
     if height < 8 or width < 40:
         lines = [("CW → RBN — enlarge terminal (min. 40×8)", "title"),
                  (notices[0] if notices else source_status(state), "error" if notices else "normal"),
-                 (new_banner(active, now, args.min_snr), "banner")]
+                 (new_banner(active, now, args.min_snr, args.bands, args.filter_spotters, args.max_snr, args.band_snr), "banner")]
         return lines[:height]
     updated = (datetime.fromtimestamp(state.updated_at, UTC).strftime("%H:%M:%S UTC")
                if state.updated_at is not None else "waiting")
@@ -203,16 +237,25 @@ def screen_frame(state: Monitor, now: float, height: int, width: int, layout: Co
     table_bottom = height - len(footer) - 1  # Reserve the last line for controls.
     lines = [("/".join(args.programs) + " CW → RBN | " + ", ".join(args.spotters)
               + f" | QTH: {args.qth_label}", "title"),
-             (new_banner(active, now, args.min_snr), "banner" if any(now < e.new_until and accepts_snr(m.receptions, args.min_snr) for e, m in active) else "muted")]
+             (new_banner(active, now, args.min_snr, args.bands, args.filter_spotters, args.max_snr, args.band_snr), "banner" if any(now < e.new_until and state.snr_filter.accepts(m) for e, m in active) else "muted")]
+    if friend_banner(state, now):
+        lines.insert(1, (friend_banner(state, now), "friend_banner"))
     # Prioritize reports while preserving room for the table.
     max_reports = max(1, height - 9)
     lines.extend((text, "error") for text in notices[:max_reports])
     if len(notices) > max_reports:
         lines[-1] = (lines[-1][0] + f" (+{len(notices) - max_reports} reports)", "error")
+    friends = friend_lines(state, now, "new")[1:]
+    room = max(0, table_bottom - len(lines))
+    if friends and room:
+        shown = friends[:room]
+        lines.extend((fit_column(text, width), "friend") for text in shown)
+        if len(friends) > room and lines:
+            lines[-1] = (fit_column(lines[-1][0] + f" (+{len(friends) - room} Friends rows)", width), "muted")
     items = active + history
     columns = layout.choose(
         (height, width), [row_values(e, m, now, park_name_length=args.park_name_length,
-                                     qth=args.qth, distance_unit=args.distance_unit, minimum_snr=args.min_snr) for e, m in items],
+                                     qth=args.qth, distance_unit=args.distance_unit, minimum_snr=args.min_snr, bands=args.bands, spotters=args.filter_spotters, maximum_snr=args.max_snr, per_band=args.band_snr) for e, m in items],
         max((len(m.receptions) for _, m in items), default=1),
         max((len(",".join(m.references)) for _, m in items), default=4),
         max(*(max_spot_age(args, p) for p in args.programs), args.history_max_age))
@@ -265,10 +308,10 @@ def screen_frame(state: Monitor, now: float, height: int, width: int, layout: Co
         for entry, match in items:
             if len(lines) >= table_bottom:
                 break
-            style = ("new" if not historical and now < entry.flash_until and accepts_snr(match.receptions, args.min_snr) else
+            style = ("new" if not historical and now < entry.flash_until and state.snr_filter.accepts(match) else
                      "history" if entry.active_match(now) is None else "normal")
             values = row_values(entry, match, now, historical, args.park_name_length,
-                                args.qth, args.distance_unit, args.min_snr)
+                                args.qth, args.distance_unit, args.min_snr, args.bands, args.filter_spotters, args.max_snr, args.band_snr)
             park_details = values[2]
             separate_name = not park_width or bool(args.park_name_length != 0 and match.reference_names
                                                    and cell_width(park_details) > park_width)
@@ -318,6 +361,10 @@ def screen_frame(state: Monitor, now: float, height: int, width: int, layout: Co
                     colors = [(a + 4, b + 4, c) for a, b, c in getattr(detail, "color_spans", ())]
                     lines.append((HighlightedText("    " + detail, [], color_spans=colors), line_style))
             count += 1
+        if not historical:
+            for text in friend_lines(state, now, "old")[1:]:
+                if len(lines) < table_bottom:
+                    lines.append((fit_column(text, width), "friend"))
         if historical:
             shown_history = count
         else:
@@ -332,10 +379,10 @@ def screen_frame(state: Monitor, now: float, height: int, width: int, layout: Co
     lines.extend(footer)
     hidden = f"{len(active) - shown_active}/{len(history) - shown_history}"
     if width >= 110:
-        controls = "Space: acknowledge | s: sort | f: filter | b: batches" + (" ON" if state.batch_mode else "") + " | q: quit"
+        controls = "r:refresh Space:ack s:sort f:filter b: batches" + (" ON" if state.batch_mode else "") + " | q: quit"
     elif width >= 60:
-        controls = "Space:ack s:sort f:filter b:batch" + (" ON" if state.batch_mode else "") + " q:quit"
+        controls = "r:ref Space:ack s:sort f:filter b:batch" + (" ON" if state.batch_mode else "") + " q:quit"
     else:
-        controls = "s:sort f:filter q:quit"
+        controls = "r:ref s:sort f:flt q:quit"
     lines.append((f"Hidden A/H: {hidden} | {controls}", "muted"))
     return lines

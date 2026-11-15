@@ -214,6 +214,6 @@ class TerminalLoopTests(unittest.TestCase):
         self.assertEqual(len(calls), 14)
         self.assertEqual(state.snr_filter, SnrFilter(20, True))
         save.assert_called_once_with(SnrFilter(20, True))
-        self.assertTrue(any('Minimum SNR filter' in text for _, frame in frames for text, _ in frame))
+        self.assertTrue(any(text.strip() == 'Filters' for _, frame in frames for text, _ in frame))
         self.assertTrue(any('Filtered (shown): 1' in text for text, _ in frames[-1][1]))
         self.assertEqual(len(frames[-1][1]), 31)

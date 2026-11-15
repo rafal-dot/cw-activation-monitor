@@ -7,11 +7,11 @@ import time
 
 from .geo import distance_km
 from .models import Entry, Match
-from .filtering import accepts_snr
+from .filtering import filter_reasons
 
 
 SORT_FIELDS = {"last": "Last activity", "first": "First seen", "db": "Signal (dB)",
-               "wpm": "WPM", "distance": "Distance"}
+               "wpm": "WPM", "distance": "Distance", "frequency": "Frequency"}
 
 
 @dataclass(frozen=True)
@@ -35,7 +35,7 @@ class SortOrder:
 
     @property
     def short_label(self) -> str:
-        return {"last": "Last", "first": "First", "db": "dB", "wpm": "WPM", "distance": "Dist"}[self.field] + (
+        return {"last": "Last", "first": "First", "db": "dB", "wpm": "WPM", "distance": "Dist", "frequency": "kHz"}[self.field] + (
             " ↓" if self.direction == "desc" else " ↑")
 
     @property
@@ -47,14 +47,14 @@ class SortOrder:
 
 def ordered_rows(rows: list[tuple[Entry, Match]], order: SortOrder,
                  origin: tuple[float, float] | None, now: float | None = None,
-                 minimum_snr: int | None = None) -> list[tuple[Entry, Match]]:
+                 minimum_snr: int | None = None, bands: frozenset[str] | None = None, spotters: frozenset[str] | None = None, maximum_snr: int | None = None, per_band=None) -> list[tuple[Entry, Match]]:
     """Newest-first time sorts prioritize the current NEW group, then use normal keys."""
     now = time.time() if now is None else now
     prioritize_new = order.field in ("last", "first") and order.direction == "desc"
     def key(row):
         entry, match = row
         fresh = (prioritize_new and now < entry.new_until and entry.active_match(now) is not None
-                 and accepts_snr(match.receptions, minimum_snr))
+                 and not filter_reasons(match, minimum_snr, bands, spotters, maximum_snr, per_band))
         snr = max((r.snr for r in match.receptions), default=None)
         if order.field == "last":
             value = entry.spot_time
@@ -64,6 +64,8 @@ def ordered_rows(rows: list[tuple[Entry, Match]], order: SortOrder,
             value = snr
         elif order.field == "wpm":
             value = max((r.wpm for r in match.receptions), default=None)
+        elif order.field == "frequency":
+            value = match.frequency
         else:
             value = distance_km(origin, match.location)
         return (not fresh, -entry.new_until if fresh else 0,

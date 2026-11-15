@@ -173,7 +173,7 @@ class FilterPreferencesTests(unittest.TestCase):
             result = subprocess.run(command + flags, cwd=Path(__file__).resolve().parents[1],
                                     capture_output=True, text=True, encoding="utf-8", timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("Min: 15 dB", result.stdout)
+            self.assertIn("Filters: On", result.stdout)
             self.assertNotIn("YO5BDL", result.stdout)
 
     def test_menu_validates_signed_threshold_applies_peek_and_cancels(self):
@@ -214,6 +214,6 @@ class FilterPreferencesTests(unittest.TestCase):
             records = list(csv.DictReader(source))
         self.assertEqual(sum(r["event"] == "NEW" for r in records), 1)
         self.assertEqual(sum(r["event"] == "ALERT" for r in records), 1)
-        self.assertIn("snr-filter=pending", records[0]["detail"])
+        self.assertIn("filter=pending", records[0]["detail"])
         with daily.open(newline="") as source:
             self.assertEqual(len(list(csv.DictReader(source))), 1)
