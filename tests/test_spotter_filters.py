@@ -38,7 +38,7 @@ class SpotterFilterTests(unittest.TestCase):
         args = cli.arguments(["--filter-spotters", "SQ5J", "--show-filtered"])
         state, poller = Monitor(args), Poller(args)
         clock, values, calls = [NOW], [(30,)], []
-        def fetch(requested, *_):
+        def fetch(requested, *_, **__):
             calls.append(requested)
             return snapshot(clock[0], values[0]).rbn
         with patch("time.time", side_effect=lambda: clock[0]), \

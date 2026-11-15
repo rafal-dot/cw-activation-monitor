@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch, Mock
 
 from cw_monitor import cli, models, monitor, polling
-from cw_monitor.friends import Friend, FriendTracker
+from cw_monitor.friends import Friend, FriendTracker, FriendIndex
 from cw_monitor.storage.friends import decode_friends, encode_friends, FriendHistory
 from cw_monitor.storage.session import close_logs
 from cw_monitor.friend_audio import FriendAudio, samples, timing, CODES
@@ -62,10 +62,41 @@ class FriendsTests(unittest.TestCase):
         self.args.friends_alerts = False
         self.assertEqual(tracker.observe([self.reading(NOW + 400)], NOW + 400, self.args), [])
 
-    def test_exact_full_call_required_and_invalid_or_unselected_spotter_is_ignored(self):
+    def test_lookalike_call_and_invalid_or_unselected_spotter_are_ignored(self):
         tracker = FriendTracker()
-        rows = [replace(self.reading(), call="G4YBU"), self.reading(receiver="OTHER1"), self.reading(NOW + 10)]
+        rows = [replace(self.reading(), call="G4YBUA"), self.reading(receiver="OTHER1"), self.reading(NOW + 10)]
         self.assertEqual(tracker.observe(rows, NOW, self.args), [])
+
+    def test_base_call_matches_prefix_suffix_and_both_and_keeps_the_full_received_call(self):
+        for listed in ("G4YBU", "G4YBU/P", "ON/G4YBU/P"):
+            self.args.friends = [replace(self.friend, call=listed)]
+            for full in ("G4YBU", "G4YBU/P", "ON/G4YBU", "ON/G4YBU/P", "SM1/G4YBU/5/QRP", "G4YBU/MM"):
+                tracker = FriendTracker()
+                reading = replace(self.reading(), call=full)
+                alert, = tracker.observe([reading], NOW, self.args)
+                self.assertEqual(alert.call, full)
+                self.assertEqual(alert.friend.call, listed)
+                self.assertEqual(tracker.markers()[0].call, full)
+                restored = FriendTracker(tracker.markers())
+                self.assertEqual(restored.observe([reading], NOW + 1, self.args), [])
+                self.assertEqual(restored.active(NOW + 1, self.args)[0].call, full)
+            for other in ("G4YBUA", "ON/G4YBUA/P", "G4YBU/SP5RFL", "ON/ON/G4YBU/P"):
+                self.assertEqual(FriendTracker().observe([replace(self.reading(), call=other)], NOW, self.args), [])
+
+    def test_matching_aliases_use_exact_metadata_without_duplicate_alerts(self):
+        bare = replace(self.friend, call="G4YBU", first_name="Base")
+        portable = replace(self.friend, first_name="Portable")
+        self.args.friends = [portable, bare]
+        self.assertEqual(FriendIndex(self.args.friends).find("G4YBU/P"), portable)
+        self.assertEqual(FriendIndex(self.args.friends).find("ON/G4YBU/P"), bare)
+        tracker = FriendTracker()
+        reading = replace(self.reading(), call="ON/G4YBU/P")
+        alerts = tracker.observe([reading, reading], NOW, self.args)
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0].friend.first_name, "Base")
+        self.assertEqual(tracker.observe([reading], NOW + 1, self.args), [])
+        self.args.friends = [portable]
+        self.assertEqual(tracker.active(NOW + 1, self.args)[0].friend, portable)
 
     def test_friends_query_shared_stream_even_when_all_program_feeds_are_empty(self):
         client = polling.Poller(self.args)
@@ -79,6 +110,25 @@ class FriendsTests(unittest.TestCase):
             snapshot = client.fetch()
             self.assertEqual(fetch.call_args.args[0], [])
             self.assertEqual(snapshot.friend_receptions, [])
+
+    def test_portable_variant_passes_poller_tracker_display_and_audio(self):
+        from cw_monitor.friend_audio import announce
+        from cw_monitor.ui.views import friend_banner
+        self.args.friends = [replace(self.friend, call="G4YBU")]
+        self.args.bell = True
+        operating = replace(self.reading(), call="ON/G4YBU/P")
+        client = polling.Poller(self.args)
+        with patch.object(client, "read_source", return_value=([], 0, set())), patch.object(time, "time", return_value=NOW), \
+             patch.object(client.rbn, "fetch", return_value=[operating]):
+            snapshot = client.fetch()
+        self.assertEqual(snapshot.friend_receptions, [operating])
+        state = monitor.Monitor(self.args)
+        state.apply(snapshot, NOW)
+        self.assertIn("ON/G4YBU/P", friend_banner(state, NOW))
+        state.args._friends_audio = Mock()
+        state.args._friends_audio.submit.return_value = ""
+        self.assertTrue(announce(state))
+        state.args._friends_audio.submit.assert_called_once_with(["ON/G4YBU/P"])
 
     def test_history_file_roundtrip_lock_and_restart_keep_readings_visible_without_repeating_alert(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -161,6 +211,14 @@ class FriendsTests(unittest.TestCase):
             self.assertEqual([call.args[0] for call in pcm.call_args_list], ["CQ G4YBU/P", "CQ SP5TEST"])
             self.assertEqual(play.call_count, 2)
             self.assertTrue(all("shell" not in call.kwargs for call in play.call_args_list))
+
+    def test_high_traffic_warning_has_its_own_terminal_style(self):
+        from cw_monitor.config import RBN_HIGH_TRAFFIC_WARNING
+        state = monitor.Monitor(self.args)
+        state.warnings = [RBN_HIGH_TRAFFIC_WARNING]
+        frame = screen_frame(state, NOW, 30, 120)
+        self.assertTrue(any(RBN_HIGH_TRAFFIC_WARNING in text and style == "warning" for text, style in frame))
+        self.assertIn("\x1b[30;43m", render(state, NOW, color=True))
 
     def test_pcm_paris_timing_and_missing_player_have_no_extra_python_dependencies(self):
         self.assertEqual(len(CODES), 38)

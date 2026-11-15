@@ -10,7 +10,7 @@ import time
 from typing import TYPE_CHECKING
 from urllib.parse import quote, urlencode
 
-from ..config import RBN_URL, UTC
+from ..config import RBN_URL, UTC, RBN_HIGH_TRAFFIC_WARNING
 from ..models import ChangedField, Entry, Match
 from ..values import age_text, band_for, clean, max_spot_age
 from .table import COMMENT_LEGEND, FREQUENCY_COLUMNS, HEADERS, NUMERIC_FIELDS, TABLE_FIELDS, comment_legend, row_values
@@ -120,7 +120,7 @@ def friend_lines(state: Monitor, now: float, phase: str | None = None) -> list[s
     result = [f"FRIENDS ({len(active)})"]
     for row in active:
         latest = row.latest
-        text = ("FRND NEW: " if now < row.new_until else "FRND: ") + row.friend.call
+        text = ("FRND NEW: " if now < row.new_until else "FRND: ") + row.call
         text += f" | {row.key[1]} | {latest.frequency:,.1f} kHz | {age_text(now - latest.time)} ago | "
         text += "/".join(f"{r.snr} dB {r.wpm} WPM ({r.receiver})" for r in row.readings)
         if row.friend.name:
@@ -133,7 +133,7 @@ def friend_lines(state: Monitor, now: float, phase: str | None = None) -> list[s
 
 def friend_banner(state: Monitor, now: float) -> str:
     rows = [row for row in state.friends.active(now, state.args) if now < row.new_until]
-    return f"FRND ({len(rows)}): " + " · ".join(row.friend.call for row in rows[:4]) if rows else ""
+    return f"FRND ({len(rows)}): " + " · ".join(row.call for row in rows[:4]) if rows else ""
 
 
 def render(state: Monitor, now: float, color: bool = False) -> str:
@@ -148,7 +148,7 @@ def render(state: Monitor, now: float, color: bool = False) -> str:
         if now < entry.flash_until and state.snr_filter.accepts(match):
             lines.append(f"ALERT: {match.call} — heard by "
                          + ", ".join(s.receiver for s in match.receptions))
-    lines.extend(reports(state))
+    lines.extend(ansi_text(line, "warning") if color and RBN_HIGH_TRAFFIC_WARNING in line else line for line in reports(state))
     if friend_banner(state, now):
         lines.insert(1, ansi_text(friend_banner(state, now), "friend_banner") if color else friend_banner(state, now))
     lines.extend(ansi_text(line, "friend") if color else line for line in friend_lines(state, now, "new")[1:])
@@ -242,7 +242,7 @@ def screen_frame(state: Monitor, now: float, height: int, width: int, layout: Co
         lines.insert(1, (friend_banner(state, now), "friend_banner"))
     # Prioritize reports while preserving room for the table.
     max_reports = max(1, height - 9)
-    lines.extend((text, "error") for text in notices[:max_reports])
+    lines.extend((text, "warning" if RBN_HIGH_TRAFFIC_WARNING in text else "error") for text in notices[:max_reports])
     if len(notices) > max_reports:
         lines[-1] = (lines[-1][0] + f" (+{len(notices) - max_reports} reports)", "error")
     friends = friend_lines(state, now, "new")[1:]

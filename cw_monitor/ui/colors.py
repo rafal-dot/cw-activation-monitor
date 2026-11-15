@@ -57,6 +57,8 @@ def ansi_text(text: str, style: str = "normal") -> str:
     attributes = ["2" if style == "history" else ""] * len(text)
     if style in ("friend", "friend_banner"):
         attributes = ["1;31"] * len(text)
+    elif style == "warning":
+        attributes = ["30;43"] * len(text)
     elif style != "new":
         for begin, end, color in getattr(text, "color_spans", ()):
             for index in range(max(0, begin), min(len(text), end)):

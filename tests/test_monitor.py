@@ -698,7 +698,7 @@ class AdaptiveScheduleTests(unittest.TestCase):
         self.assertNotIn("POTA", self.poller.source_errors)
 
     def test_confirming_all_targets_does_not_postpone_the_next_source_refresh(self):
-        def rbn_fetch(calls, receivers, age):
+        def rbn_fetch(calls, receivers, age, *, friends=()):
             if not calls:
                 self.poller.rbn.poll_interval = self.poller.args.interval
             return [rbn()] if self.clock >= 30 and calls else []

@@ -10,7 +10,8 @@ from threading import Event
 import time
 from urllib.parse import urlencode
 
-from ..config import CALL_PATTERN, RBN_URL
+from ..config import CALL_PATTERN, RBN_URL, RBN_HIGH_TRAFFIC_WARNING
+from ..friends import FriendIndex
 from ..models import RbnSpot, SourceError
 from ..values import clean, frequency, receiver_call, integer_reading
 from . import http
@@ -73,6 +74,8 @@ class RbnStream:
     interval: float = 60
     quiet_intervals: int = 0
     batch_cursor: int = 0
+    last_page_end: float | None = None
+    traffic_gap_until: float = 0
 
 
 class RbnClient:
@@ -93,8 +96,10 @@ class RbnClient:
         self.small_batches = small_batches if small_batches is not None else Event()
         self.streams: dict[tuple, RbnStream] = {}
         self.status = "RBN: waiting"
+        self.diagnostic_status = ""
         self.request_log: list[str] = []
         self.base_interval = self.poll_interval = interval
+        self.friend_index = FriendIndex()
 
     def adjust_interval(self, stream: RbnStream, count: int, span: float, complete: bool, max_age: float) -> None:
         minimum = min(15, self.base_interval)
@@ -170,7 +175,7 @@ class RbnClient:
                         continue
                     call = str(item["dx"]).strip().upper()
                     receiver = receiver_call(str(item["de"]))
-                    if (calls is not None and call not in calls) or receiver not in receivers:
+                    if (calls is not None and call not in calls and self.friend_index.find(call) is None) or receiver not in receivers:
                         continue
                     if not CALL_PATTERN.fullmatch(call) or not CALL_PATTERN.fullmatch(receiver) or isinstance(item["epoch"], bool):
                         raise ValueError("Invalid call or timestamp")
@@ -216,9 +221,12 @@ class RbnClient:
                                      "results may be incomplete even in smaller batches")
         return result
 
-    def fetch(self, calls: list[str], receivers: list[str], max_age: float) -> list[RbnSpot]:
+    def fetch(self, calls: list[str], receivers: list[str], max_age: float, *, friends=()) -> list[RbnSpot]:
+        self.friend_index = FriendIndex(friends)
+        calls = sorted(set(calls) | {friend.call for friend in friends})
         self.warnings = []
         self.request_log = []
+        self.diagnostic_status = ""
         self.remaining_requests = 8
         self.budget_reported = False
         if not calls:
@@ -236,6 +244,9 @@ class RbnClient:
         window = max(1.0, started - target)
         previous = stream.watermark
         seen_before = set(stream.spots)
+        previous_page_end = stream.last_page_end
+        previous_read_at = stream.covered_until
+        was_at_minimum = stream.interval <= min(15, self.base_interval)
         limit = stream.load.start(window)
         while True:
             rows, count, skipped = self._request(None, receivers, max_age, limit)
@@ -270,31 +281,40 @@ class RbnClient:
         # Delivery latency is not the arrival rate; unchanged pages are not new bursts.
         span = newest - min((spot.time for spot in valid.values()), default=newest)
         self.adjust_interval(stream, len(valid) if new_page else 0, span, complete, max_age)
+        # Startup backfill is not a missed live update. A capped page with no
+        # timestamp overlap at the fastest cadence can hide intervening calls.
+        fast_cycle = previous_read_at is not None and 0 < started - previous_read_at <= 30
+        if (was_at_minimum and fast_cycle and previous_page_end is not None and new_page
+                and not skipped and len(valid) >= 100 and oldest > previous_page_end):
+            stream.traffic_gap_until = now + max_age
+        if not skipped and (count < limit or valid):
+            end = started if count < limit else newest
+            # Cached/out-of-order pages must not move the live checkpoint backwards.
+            stream.last_page_end = max(previous_page_end if previous_page_end is not None else end, end)
+        if complete:
+            stream.traffic_gap_until = 0
+
         if complete:
             stream.watermark = started
             stream.sampled_ids = set(stream.spots)
-        else:
-            self.warnings.append(f"RBN stream incomplete at 100 rows; polling every {self.poll_interval:g}s; "
-                                 "earlier spots may be missing; press b for smaller batches "
-                                 "or use --rbn-small-batches in text mode")
-            if self.small_batches.is_set():
-                first = stream.batch_cursor % len(calls)
-                ordered = sorted(calls)
-                rotated = ordered[first:] + ordered[:first]
-                groups = [rotated[start:start + 20] for start in range(0, len(calls), 20)]
-                for offset in range(len(groups)):
-                    if not self._has_budget():
-                        break
-                    # Advance inside a group too: a saturated early call must not starve its neighbours.
-                    stream.batch_cursor = (first + offset * 20 + 1) % len(calls)
-                    stream.spots.update(self._query(groups[offset], receivers, max_age))
-                self.warnings = [w for w in self.warnings if not w.startswith("RBN stream incomplete")]
+        elif self.small_batches.is_set():
+            ordered = sorted(set(calls) | {s.call for s in stream.spots.values() if self.friend_index.find(s.call) is not None})
+            first = stream.batch_cursor % len(ordered)
+            rotated = ordered[first:] + ordered[:first]
+            groups = [rotated[start:start + 20] for start in range(0, len(ordered), 20)]
+            for offset in range(len(groups)):
+                if not self._has_budget():
+                    break
+                # Advance inside a group too: a saturated early call must not starve its neighbours.
+                stream.batch_cursor = (first + offset * 20 + 1) % len(ordered)
+                stream.spots.update(self._query(groups[offset], receivers, max_age))
         now = time.time()
         stream.spots = {i: s for i, s in stream.spots.items() if 0 <= now - s.time <= max_age}
-        mode = "stream" if complete else "batches" if self.small_batches.is_set() else "INCOMPLETE"
-        average = "—" if stream.load.average is None else f"{stream.load.average:.1f}"
-        peak = f"{max(stream.load.peaks):.1f}" if stream.load.peaks else "—"
-        self.status = (f"RBN {mode}: every {self.poll_interval:g}s | rows {limit}→{stream.load.limit} | "
-                       f"avg {average}/min | peak {peak}/min")
+        if stream.traffic_gap_until > now and not self.small_batches.is_set():
+            self.warnings.append(RBN_HIGH_TRAFFIC_WARNING)
+        mode = "batches" if self.small_batches.is_set() else "collecting recent receptions" if previous_page_end is None and not complete else "stream"
+        self.status = f"RBN {mode}: " + " / ".join(receivers)
+        self.diagnostic_status = (f"interval={self.poll_interval:g}s rows={limit}→{stream.load.limit} "
+                                  f"avg={stream.load.average} peaks={list(stream.load.peaks)}")
         selected = set(calls)
-        return [s for s in stream.spots.values() if s.call in selected]
+        return [s for s in stream.spots.values() if s.call in selected or self.friend_index.find(s.call) is not None]

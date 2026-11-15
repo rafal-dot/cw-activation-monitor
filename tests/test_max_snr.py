@@ -38,7 +38,7 @@ class SnrBoundsTests(unittest.TestCase):
         args = cli.arguments(["--max-snr", "10", "--show-filtered"])
         state, poller = Monitor(args), Poller(args)
         clock, snr, requests = [NOW], [25], []
-        def fetch(calls, *_):
+        def fetch(calls, *_, **__):
             requests.append(calls); return snapshot(clock[0], (snr[0],)).rbn
         with patch("time.time", side_effect=lambda: clock[0]), \
                 patch.object(poller, "read_source", side_effect=lambda _: (snapshot(clock[0]).spots, 0, set())), \

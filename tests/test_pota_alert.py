@@ -200,12 +200,12 @@ class RbnClientTests(unittest.TestCase):
         self.assertLessEqual(len(queries), 16)
         self.assertTrue(first)
 
-    def test_single_pair_limit_emits_warning(self):
+    def test_initial_full_page_does_not_warn_before_a_live_gap_is_observed(self):
         data = {"ver_h": "v1", "spots": {str(i): raw_rbn() for i in range(100)}}
         client = self.client()
         with patch.object(http, "get_json", return_value=data):
             client.fetch(["IU1PZC"], ["SP5GQ"], 300)
-        self.assertIn("incomplete", client.warnings[0])
+        self.assertEqual(client.warnings, [])
 
     def test_schema_and_server_errors_are_not_empty_success(self):
         for data in ({"ver_h": "v1", "error": "unavailable"},

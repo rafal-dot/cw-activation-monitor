@@ -55,7 +55,7 @@ class CursesDisplay:
                            "updated_cell": curses.A_BOLD | curses.A_REVERSE | curses.A_UNDERLINE,
                            "history": curses.A_DIM, "muted": curses.A_DIM,
                            "table_header": curses.A_BOLD, "separator": curses.A_DIM,
-                           "error": curses.A_BOLD, "friend": curses.A_BOLD, "friend_banner": curses.A_BOLD | curses.A_REVERSE}
+                           "error": curses.A_BOLD, "warning": curses.A_BOLD, "friend": curses.A_BOLD, "friend_banner": curses.A_BOLD | curses.A_REVERSE}
         screen.timeout(200)
         try:
             curses.curs_set(0)
@@ -75,6 +75,7 @@ class CursesDisplay:
             self.attributes["banner"] = curses.color_pair(1)
             self.attributes["new"] = curses.color_pair(1)
             self.attributes["error"] |= curses.color_pair(3)
+            self.attributes["warning"] = curses.color_pair(1)
             self.attributes["friend"] |= curses.color_pair(3)
             self.attributes["friend_banner"] = curses.A_BOLD | curses.color_pair(3)
             self.attributes["updated"] = curses.A_BOLD | curses.color_pair(2)

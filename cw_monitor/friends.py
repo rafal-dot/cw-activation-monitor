@@ -1,10 +1,11 @@
-"""Exact callsign/band friend reception tracking, independent of activation programs."""
+"""Base-call matching with full operating callsign/band reception identities."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
 from .config import CALL_PATTERN
+from .callsigns import base_callsign
 from .models import RbnSpot
 from .values import station_band, band_for
 from .snr import resolve_snr
@@ -35,6 +36,21 @@ class Friend:
         return self
 
 
+class FriendIndex:
+    """Exact entries win, then a bare base entry, then a stable same-base alias."""
+
+    def __init__(self, friends=()):
+        self.exact = {friend.call: friend for friend in friends}
+        self.bases = {}
+        for friend in sorted(friends, key=lambda friend: friend.call, reverse=True):
+            base = base_callsign(friend.call)
+            if base is not None:
+                self.bases[base] = self.exact.get(base, friend)
+
+    def find(self, call: str) -> Friend | None:
+        return self.exact.get(call) or self.bases.get(base_callsign(call))
+
+
 @dataclass(frozen=True)
 class FriendSeen:
     call: str
@@ -60,8 +76,12 @@ class FriendReception:
         return max(self.readings, key=lambda r: r.time)
 
     @property
+    def call(self) -> str:
+        return self.latest.call
+
+    @property
     def key(self):
-        return station_band(self.friend.call, self.latest.frequency)
+        return station_band(self.call, self.latest.frequency)
 
 
 def accepts(reading: RbnSpot, args) -> bool:
@@ -82,14 +102,14 @@ class FriendTracker:
         return sorted(self.seen.values(), key=lambda row: row.key)
 
     def observe(self, readings: list[RbnSpot], now: float, args) -> list[FriendReception]:
-        friends = {friend.call: friend for friend in args.friends}
-        self.seen = {key: row for key, row in self.seen.items() if row.call in friends and 0 <= now - row.last_seen <= max(86400, args.rbn_max_age)}
+        friends = FriendIndex(args.friends)
+        self.seen = {key: row for key, row in self.seen.items() if friends.find(row.call) is not None and 0 <= now - row.last_seen <= max(86400, args.rbn_max_age)}
         self.receptions = {key: row for key, row in self.receptions.items() if key in self.seen}
         if not args.friends_alerts:
             return []
         groups = {}
         for reading in readings:
-            if (reading.call in friends and reading.receiver in args.spotters and reading.time is not None
+            if (friends.find(reading.call) is not None and reading.receiver in args.spotters and reading.time is not None
                     and 0 <= now - reading.time <= args.rbn_max_age):
                 groups.setdefault(station_band(reading.call, reading.frequency), []).append(reading)
         alerts = []
@@ -105,7 +125,7 @@ class FriendTracker:
             for reading in (() if fresh or old is None else old.readings) + tuple(incoming):
                 if 0 <= now - reading.time <= args.rbn_max_age and (reading.receiver not in latest or reading.time > latest[reading.receiver].time):
                     latest[reading.receiver] = reading
-            record = FriendReception(friends[key[0]], tuple(latest[s] for s in args.spotters if s in latest), first, 0 if fresh or old is None else old.new_until)
+            record = FriendReception(friends.find(key[0]), tuple(latest[s] for s in args.spotters if s in latest), first, 0 if fresh or old is None else old.new_until)
             eligible = any(accepts(r, args) for r in record.readings)
             alerted = not fresh and previous.alerted
             if not alerted and eligible:
@@ -131,12 +151,13 @@ class FriendTracker:
     def active(self, now: float, args) -> list[FriendReception]:
         if not args.friends_alerts:
             return []
-        friends = {friend.call: friend for friend in args.friends}
+        friends = FriendIndex(args.friends)
         result = []
         for row in self.receptions.values():
-            if row.friend.call not in friends:
+            friend = friends.find(row.call)
+            if friend is None:
                 continue
             current = tuple(r for r in row.readings if 0 <= now - r.time <= args.rbn_max_age and accepts(r, args))
             if current:
-                result.append(FriendReception(friends[row.friend.call], current, row.first_seen, row.new_until))
+                result.append(FriendReception(friend, current, row.first_seen, row.new_until))
         return sorted(result, key=lambda row: (-row.latest.time, row.key))

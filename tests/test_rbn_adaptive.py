@@ -4,6 +4,8 @@ from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 from cw_monitor import models
+from cw_monitor.config import RBN_HIGH_TRAFFIC_WARNING
+from cw_monitor.friends import Friend
 from cw_monitor.sources import http
 from cw_monitor.sources import rbn as rbn_source
 import time
@@ -142,10 +144,10 @@ class AdaptiveFetchTests(unittest.TestCase):
         self.assertEqual(self.stream().watermark, NOW)
         self.assertEqual((self.stream().load.average, tuple(self.stream().load.peaks)), before)
         self.assertEqual(self.stream().load.limit, 100)
-        self.assertTrue(any("incomplete" in w and "press b" in w for w in self.client.warnings))
+        self.assertEqual(self.client.warnings, [])
         self.assertTrue(all("cdx" not in q for q in self.feed.queries))
         self.assertEqual(self.client.poll_interval, 30)
-        self.assertIn("every 30s", self.client.status)
+        self.assertNotIn("30s", self.client.status)
 
     def test_heavier_burst_shortens_to_fifteen_seconds_and_respects_the_minimum(self):
         for i in range(200):
@@ -158,20 +160,20 @@ class AdaptiveFetchTests(unittest.TestCase):
             self.feed.add(f"burst{i}", self.feed.now - i / 100, call="BUSY")
         self.fetch()
         self.assertEqual(self.client.poll_interval, 15)
-        self.assertTrue(any("incomplete" in w for w in self.client.warnings))
+        self.assertEqual(self.client.warnings, [RBN_HIGH_TRAFFIC_WARNING])
 
     def test_delayed_dense_pages_shorten_to_thirty_then_fifteen_seconds(self):
         for i in range(150):
             self.feed.add(f"first{i}", NOW - 40 - i * .52, call="BUSY")
         self.fetch()
         self.assertEqual(self.client.poll_interval, 30)
-        self.assertIn("every 30s", self.client.status)
+        self.assertNotIn("30s", self.client.status)
         self.feed.now += 30
         for i in range(150):
             self.feed.add(f"next{i}", self.feed.now - 40 - i * .2, call="BUSY")
         self.fetch()
         self.assertEqual(self.client.poll_interval, 15)
-        self.assertIn("every 15s", self.client.status)
+        self.assertNotIn("15s", self.client.status)
 
     def test_repeated_dense_page_does_not_restart_acceleration_after_clock_advances(self):
         for i in range(150):
@@ -208,7 +210,7 @@ class AdaptiveFetchTests(unittest.TestCase):
             self.fetch()
             if self.feed.now - 300 <= gap_end:
                 self.assertEqual(self.stream().watermark, NOW)
-                self.assertTrue(any("incomplete" in w for w in self.client.warnings))
+                self.assertEqual(self.client.warnings, [])
             else:
                 self.assertEqual(self.stream().watermark, self.feed.now)
                 self.assertEqual(self.client.warnings, [])
@@ -242,7 +244,7 @@ class AdaptiveFetchTests(unittest.TestCase):
             self.feed.add(i, NOW - i * 2, call="BUSY")
         self.fetch()
         self.assertEqual(self.client.poll_interval, 60)
-        self.assertTrue(any("incomplete" in w for w in self.client.warnings))
+        self.assertEqual(self.client.warnings, [])
 
     def test_no_pending_calls_suspends_fast_polling_without_erasing_profile_history(self):
         for i in range(200):
@@ -282,6 +284,66 @@ class AdaptiveFetchTests(unittest.TestCase):
         self.assertEqual(self.stream().watermark, NOW + 320)
         retained = sum(row[-1] >= NOW + 20 for row in self.feed.rows.values())
         self.assertAlmostEqual(self.stream().load.peaks[-1], retained / 5)
+
+    def test_friends_variants_survive_shared_stream_selection_and_targeted_validation(self):
+        self.feed.add("friend", NOW - 1, call="ON/G4YBU/P")
+        self.feed.add("other", NOW - 2, call="ON/G4YBUA/P")
+        friends = [Friend("G4YBU")]
+        received = self.client.fetch(["G4YBU"], ["SP5GQ"], 300, friends=friends)
+        self.assertEqual([reading.call for reading in received], ["ON/G4YBU/P"])
+        self.assertTrue(all("cdx" not in query for query in self.feed.queries))
+        # A service returning a portable variant to a targeted base-call query
+        # must not lose it in the client's second-stage validation.
+        response = {"ver_h": "v1", "spots": {"variant": raw_rbn(call="ON/G4YBU/P", age=1)}}
+        with patch.object(http, "get_json", return_value=response):
+            rows, _, _ = self.client._request(["G4YBU"], ["SP5GQ"], 300, 100)
+        self.assertEqual(rows["variant"].call, "ON/G4YBU/P")
+
+    def test_dense_overlapping_pages_and_repeated_pages_are_quiet_but_a_gap_warns_until_recovered(self):
+        for i in range(200):
+            self.feed.add(f"initial-{i}", NOW - i / 5, call="BUSY")
+        self.fetch()
+        self.assertEqual(self.client.poll_interval, 15)
+        self.assertEqual(self.client.warnings, [])
+        self.feed.now += 15
+        for i in range(100):
+            self.feed.add(f"overlap-{i}", NOW + 15 - i / 5, call="BUSY")
+        self.fetch()
+        self.assertEqual(self.client.warnings, [])
+        self.feed.now += 15
+        self.fetch()  # Identical delayed page is not another high-traffic gap.
+        self.assertEqual(self.client.warnings, [])
+        self.feed.now += 15
+        for i in range(150):
+            self.feed.add(f"gap-{i}", self.feed.now - i / 20, call="BUSY")
+        self.fetch()
+        self.assertEqual(self.client.warnings, [RBN_HIGH_TRAFFIC_WARNING])
+        self.feed.now += 15
+        self.fetch()
+        self.assertEqual(self.client.warnings, [RBN_HIGH_TRAFFIC_WARNING])
+        self.feed.now += 301
+        self.fetch()
+        self.assertEqual(self.client.warnings, [])
+
+    def test_out_of_order_cached_page_does_not_create_a_false_high_traffic_gap(self):
+        for cycle, (advance, newest) in enumerate(((0, NOW), (15, NOW - 30), (15, NOW + 5))):
+            self.feed.now += advance
+            self.feed.rows.clear()
+            for i in range(150):
+                self.feed.add(f"{cycle}-{i}", newest - i / 10, call="BUSY")
+            self.fetch()
+            self.assertEqual(self.client.poll_interval, 15)
+            self.assertEqual(self.client.warnings, [])
+
+    def test_resuming_after_a_pause_is_quiet_until_another_fast_cycle_really_misses_calls(self):
+        for cycle, advance in enumerate((0, 120, 15)):
+            self.feed.now += advance
+            self.feed.rows.clear()
+            for i in range(150):
+                self.feed.add(f"resume-{cycle}-{i}", self.feed.now - i / 10, call="BUSY")
+            self.fetch()
+            self.assertEqual(self.client.poll_interval, 15)
+            self.assertEqual(self.client.warnings, [RBN_HIGH_TRAFFIC_WARNING] if cycle == 2 else [])
 
     def test_source_error_preserves_watermark_and_statistics_then_recovers(self):
         self.feed.add("old", NOW - 1)

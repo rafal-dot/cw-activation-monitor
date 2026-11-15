@@ -8,6 +8,7 @@ from queue import Queue
 from threading import Event, Thread
 import time
 
+from .friends import FriendIndex
 from .config import MAX_RESPONSE_BYTES, POTA_URL, WWFF_URL
 from .models import ActivationSpot, Match, RbnSpot, Snapshot, SourceError
 from .restore import startup_entries
@@ -150,14 +151,16 @@ class Poller:
                              if key not in inactive and spot.program in args.programs and 0 <= now - spot.time <= max_spot_age(args, spot.program)}
         if force:
             latest = {**self.recent_spots, **latest}
-        friend_calls = {friend.call for friend in args.friends} if args.friends_alerts else set()
+        friends = args.friends if args.friends_alerts else ()
+        friend_index = FriendIndex(friends)
+        friend_calls = {friend.call for friend in friends}
         pending = [p for key, p in latest.items() if force or key not in self.confirmed or any(value is not None for value in resolve_snr(args.min_snr, args.max_snr, args.band_snr, band_for(p.frequency))) or args.filter_spotters is not None]
         received = []
         try:
             if time.monotonic() < (self.server_retry_at if force else self.retry_at).get("RBN", 0):
                 errors.append(self.source_errors["RBN"] + (" (manual refresh deferred by Retry-After)" if force else " (retry delayed)"))
             else:
-                received = self.rbn.fetch(sorted({p.call for p in pending} | friend_calls), args.spotters, args.rbn_max_age)
+                received = self.rbn.fetch(sorted({p.call for p in pending} | friend_calls), args.spotters, args.rbn_max_age, friends=friends)
                 warnings.extend(self.rbn.warnings)
                 self.failure_counts.pop("RBN", None)
                 self.retry_at.pop("RBN", None)
@@ -207,5 +210,5 @@ class Poller:
         if self.log:
             for detail in self.rbn.request_log:
                 self.log.record("RBN_QUERY", now, detail=detail, debug=True)
-            self.log.record("RBN_FETCH", now, detail=self.rbn.status + " | " + " | ".join(warnings + errors), debug=True)
-        return Snapshot(list(latest.values()), list(cached), warnings, now, inactive, failed, errors, self.rbn.status, [r for r in received if r.call in friend_calls])
+            self.log.record("RBN_FETCH", now, detail=self.rbn.status + " | " + self.rbn.diagnostic_status + " | " + " | ".join(warnings + errors), debug=True)
+        return Snapshot(list(latest.values()), list(cached), warnings, now, inactive, failed, errors, self.rbn.status, [r for r in received if friend_index.find(r.call) is not None])

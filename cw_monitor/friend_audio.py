@@ -129,5 +129,5 @@ def announce(state):
         return False
     if not hasattr(state.args, "_friends_audio"):
         state.args._friends_audio = FriendAudio(state.args.morse_wpm, state.args.morse_tone)
-    state.friends_audio_error = state.args._friends_audio.submit([row.friend.call for row in state.new_friends])
+    state.friends_audio_error = state.args._friends_audio.submit([row.call for row in state.new_friends])
     return not state.friends_audio_error

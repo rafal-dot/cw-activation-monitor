@@ -46,3 +46,5 @@ BANDS = (
     (134000000, 149000000, "2mm"), (241000000, 250000000, "1mm"),
     (275000000, 30000000000, "submm"),
 )
+
+RBN_HIGH_TRAFFIC_WARNING = "RBN: Very high traffic; some callsigns may be missing. Try fewer spotters or smaller batches."

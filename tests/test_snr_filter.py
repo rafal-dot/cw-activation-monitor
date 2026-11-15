@@ -118,7 +118,7 @@ class SnrFilterTests(unittest.TestCase):
         requests = []
         def source(program):
             return snapshot(current[0], (values[0],)).spots, 0, set()
-        def fetch(calls, *_):
+        def fetch(calls, *_, **__):
             requests.append(calls)
             return snapshot(current[0], (values[0],)).rbn
         with patch("time.time", side_effect=lambda: current[0]), patch.object(poller, "read_source", side_effect=source), \
