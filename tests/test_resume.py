@@ -108,13 +108,14 @@ class ResumeTests(unittest.TestCase):
         with patch.object(poller, "read_source", return_value=([spot], 0, set())), \
              patch.object(poller.rbn, "fetch", return_value=[]) as fetch:
             snapshot = poller.fetch()
-        self.assertEqual(fetch.call_args.args[0], [])
+        self.assertEqual(fetch.call_args.args[0], ["IU1PZC"])
         self.assertEqual(restored.apply(snapshot, NOW), [])
         self.assertEqual(restored.rows(NOW)[1], [])
         entry, match = restored.rows(NOW)[0][0]
         self.assertIsNotNone(entry.active_match(NOW))
         self.assertEqual(table_ui.row_values(entry, match, NOW, history=True)[11], "ACTIVE RESTORED")
         self.assertEqual(table_ui.row_values(entry, match, NOW, history=True)[7], "—")
+        self.assertEqual(table_ui.row_values(entry, match, NOW, history=True)[17], "—")
         self.assertEqual([row["event"] for row in self.records()].count("NEW"), 1)
         self.assertFalse(entry.awaiting_source)
 

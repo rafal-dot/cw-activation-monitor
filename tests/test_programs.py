@@ -149,7 +149,7 @@ class MultiSourcePollerTests(unittest.TestCase):
              patch.object(poller.rbn, "fetch", side_effect=[[rbn()], []]) as fetch:
             first, second = poller.fetch(), poller.fetch()
         self.assertEqual(fetch.call_args_list[0].args[0], ["IU1PZC"])
-        self.assertEqual(fetch.call_args_list[1].args[0], [])
+        self.assertEqual(fetch.call_args_list[1].args[0], ["IU1PZC"])
         self.assertEqual(len(poller.confirmed), 2)
         self.assertEqual({p.program for p in first.spots}, {"POTA", "WWFF"})
         self.assertEqual(second.rbn[0].time, NOW - 42)

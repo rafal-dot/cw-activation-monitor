@@ -11,11 +11,11 @@ from typing import TYPE_CHECKING
 from urllib.parse import quote, urlencode
 
 from ..config import RBN_URL, UTC, RBN_HIGH_TRAFFIC_WARNING
-from ..models import ChangedField, Entry, Match
+from ..models import ChangedField, Entry, Match, rbn_confirmation_outdated
 from ..values import age_text, band_for, clean, max_spot_age
 from .table import COMMENT_LEGEND, FREQUENCY_COLUMNS, HEADERS, NUMERIC_FIELDS, TABLE_FIELDS, comment_legend, row_values
 from .layout import ColumnLayout, HighlightedText, cell_width, compact_values, fit_column, wrap_cells
-from .colors import ansi_text, measurement_spans, value_spans
+from .colors import ansi_text, measurement_spans, rbn_age_spans, value_spans
 from .rbn_status import polling_lines
 from ..filtering import filter_reasons
 if TYPE_CHECKING:
@@ -174,10 +174,11 @@ def render(state: Monitor, now: float, color: bool = False) -> str:
                 text = " | ".join(parts)
                 if color and index:
                     entry = items[index - 1][0]
+                    outdated = rbn_confirmation_outdated(items[index - 1][1], now, args.rbn_max_age)
                     spans, highlights, offset = [], [], 0
                     for field, part in zip(TABLE_FIELDS, parts):
                         spans.extend((offset + a, offset + b, c) for a, b, c in
-                                     value_spans(field, part, args.snr_thresholds, args.wpm_thresholds))
+                                     value_spans(field, part, args.snr_thresholds, args.wpm_thresholds, outdated))
                         if now < entry.updated_until and FREQUENCY_COLUMNS.get(field) in entry.updated_fields:
                             highlights.append((offset + len(part) - len(part.lstrip()), offset + len(part.rstrip())))
                         offset += len(part) + 3
@@ -185,6 +186,8 @@ def render(state: Monitor, now: float, color: bool = False) -> str:
                              "history" if entry.active_match(now) is None else "normal")
                     text = ansi_text(HighlightedText(text, highlights, color_spans=spans), style)
                 lines.append(text)
+                if index and rbn_confirmation_outdated(items[index - 1][1], now, args.rbn_max_age):
+                    lines.append("    RBN confirmation outdated")
                 if index == 0:
                     lines.append("-+-".join("-" * w for w in widths))
                     header_shown = True
@@ -197,13 +200,13 @@ def render(state: Monitor, now: float, color: bool = False) -> str:
                 lines.extend(links_for(match, args, historical))
     confirmed_active = sum(e.active_match(now) is not None for e, _ in active + history)
     lines.extend(["", f"Fresh CW spots: {count} | confirmed: {confirmed_active} | history: {len(history)}",
-                  f"{limits_text(args)} | RBN start ≤ {args.rbn_max_age:g}s | "
+                  f"{limits_text(args)} | RBN fresh ≤ {args.rbn_max_age:g}s | "
                   f"history ≤ {args.history_max_age:g}s | tolerance ±{args.tolerance:g} kHz"])
     if not state.error and not state.warnings:
         lines.append(source_status(state))
     lines.extend(polling_lines(state.rbn_status, refresh_status(state) + " | Sort: " + state.sort.label, demo=args.demo))
     lines.append(COMMENT_LEGEND)
-    lines.append("First seen: time since detection; Last spot: age of the latest program report.")
+    lines.append("First seen: since detection; Last RBN: latest spotter report; Last spot: latest program report.")
     lines.append(f"Distance: great-circle distance from QTH {args.qth_label} to the reference location ({args.distance_unit})."
                  if args.qth is not None else "Distance: set --qth or CW_ACTIVATION_QTH to use your home location.")
     lines.append("Azimuth: initial bearing from QTH, clockwise from true north (000° N, 090° E).")
@@ -235,7 +238,7 @@ def screen_frame(state: Monitor, now: float, height: int, width: int, layout: Co
     else:
         footer = [(f"{refresh_status(state)} | {metadata}", "muted")]
     if height >= 10:
-        details = f"{limits_text(args)} | RBN start ≤ {args.rbn_max_age:g}s | history ≤ {args.history_max_age:g}s | ±{args.tolerance:g} kHz"
+        details = f"{limits_text(args)} | RBN fresh ≤ {args.rbn_max_age:g}s | history ≤ {args.history_max_age:g}s | ±{args.tolerance:g} kHz"
         footer.append(((metadata + " | " if height >= 14 else "") + details, "muted"))
     if height >= 10 or not notices:
         footer.append((comment_legend(width), "muted"))
@@ -265,7 +268,7 @@ def screen_frame(state: Monitor, now: float, height: int, width: int, layout: Co
         max((len(",".join(m.references)) for _, m in items), default=4),
         max(*(max_spot_age(args, p) for p in args.programs), args.history_max_age))
 
-    def format_row(values: list[str], changed_fields: set[ChangedField] | None = None) -> str:
+    def format_row(values: list[str], changed_fields: set[ChangedField] | None = None, outdated: bool = False) -> str:
         header = values == HEADERS
         values = compact_values(values)
         parts, highlights, separators, band_spans, colors, offset = [], [], [], [], [], 0
@@ -284,7 +287,7 @@ def screen_frame(state: Monitor, now: float, height: int, width: int, layout: Co
                 band_spans.append((offset + len(part) - len(part.lstrip()), offset + len(part.rstrip()), values[i]))
             if not header:
                 colors.extend((offset + a, offset + b, c) for a, b, c in
-                              value_spans(i, part, args.snr_thresholds, args.wpm_thresholds))
+                              value_spans(i, part, args.snr_thresholds, args.wpm_thresholds, outdated))
             parts.append(part)
             offset += len(part)
         return HighlightedText("".join(parts), highlights, separators, band_spans, colors)
@@ -327,11 +330,15 @@ def screen_frame(state: Monitor, now: float, height: int, width: int, layout: Co
             if comment_lines:
                 values[11] = comment_lines[0]
             changed = entry.updated_fields if now < entry.updated_until else set()
-            lines.append((format_row(values, changed), style))
+            outdated = rbn_confirmation_outdated(match, now, args.rbn_max_age)
+            lines.append((format_row(values, changed, outdated), style))
             for continuation in comment_lines[1:]:
                 if len(lines) < table_bottom:
                     lines.append((" " * comment_start + continuation, "muted"))
             details = []
+            if outdated:
+                details.extend((text, "history" if historical else "muted")
+                               for text in wrap_cells("RBN confirmation outdated", max(2, width - 5)))
             detail_style = "history" if historical else "muted"
             if not age_in_table:
                 age_detail = "RBN age: " + values[7].replace(" / ", "/")
@@ -349,18 +356,20 @@ def screen_frame(state: Monitor, now: float, height: int, width: int, layout: Co
                 for text in wrap_cells(" | ".join(measurements), max(2, width - 5)):
                     spans = measurement_spans(text, args.snr_thresholds, args.wpm_thresholds)
                     details.append((HighlightedText(text, [], color_spans=spans), style))
-            age_details = [HEADERS[field] + ": " + values[field] for field in (12, 13, 14, 16)
+            age_details = [HEADERS[field] + ": " + values[field] for field in (12, 17, 13, 14, 16)
                            if not any(i == field for i, _ in columns)]
             packed = ""
             for detail in age_details:
                 combined = packed + " | " + detail if packed else detail
                 if packed and cell_width(combined) > width - 5:
-                    details.extend((text, detail_style) for text in wrap_cells(packed, max(2, width - 5)))
+                    details.extend((HighlightedText(text, [], color_spans=rbn_age_spans(text, outdated)), detail_style)
+                                   for text in wrap_cells(packed, max(2, width - 5)))
                     packed = detail
                 else:
                     packed = combined
             if packed:
-                details.extend((text, detail_style) for text in wrap_cells(packed, max(2, width - 5)))
+                details.extend((HighlightedText(text, [], color_spans=rbn_age_spans(text, outdated)), detail_style)
+                               for text in wrap_cells(packed, max(2, width - 5)))
             for detail, line_style in details:
                 if len(lines) < table_bottom:
                     colors = [(a + 4, b + 4, c) for a, b, c in getattr(detail, "color_spans", ())]

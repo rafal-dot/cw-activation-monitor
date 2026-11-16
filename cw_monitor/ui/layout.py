@@ -113,7 +113,7 @@ class ColumnLayout:
 
         # Move optional measurements below the row when space runs out.
         # Preserve both frequencies, band and full reception ages.
-        for optional in (16, 14, 12, 13, 2, 6, 5, 4):
+        for optional in (16, 14, 12, 13, 17, 2, 6, 5, 4):
             if used() <= budget:
                 break
             fields.remove(optional)

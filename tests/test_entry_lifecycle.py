@@ -195,7 +195,7 @@ class EntryLifecycleTests(unittest.TestCase):
         second = snapshot(NOW + 10, 14053.1, False)
         second.spots[0] = models.ActivationSpot("IU1PZC", "IT-0759", 14053.1, NOW + 10, full_name)
         self.state.apply(second, NOW + 10)
-        frame = views_ui.screen_frame(self.state, NOW + 10, 30, 280)
+        frame = views_ui.screen_frame(self.state, NOW + 10, 30, 292)
         header = next(text for text, _ in frame if text.startswith("Program"))
         self.assertEqual(header.replace("│", " ").split()[:4], ["Program", "Activator", "Band", "Spot"])
         self.assertLess(header.index("RBN kHz"), header.index("Reference"))
@@ -203,7 +203,7 @@ class EntryLifecycleTests(unittest.TestCase):
         self.assertIn(f"IT-0759 ({full_name})", row)
         self.assertIn("ACTIVE NEW UPD | Spot 14052.9 → 14053.1 kHz", row)
         self.assertNotIn("…", row)
-        self.assertLess(layout_ui.cell_width(row), 280)
+        self.assertLess(layout_ui.cell_width(row), 292)
 
     def test_wrapped_reference_name_inherits_new_normal_and_history_styles(self):
         name = "Rozległy rezerwat przyrody obejmujący dolinę rzeki oraz sąsiednie lasy i tereny podmokłe"
@@ -263,10 +263,10 @@ class EntryLifecycleTests(unittest.TestCase):
         data.spots[0] = models.ActivationSpot("IU1PZC", "IT-0759", 14053.1, NOW + 1, name)
         data.rbn = []
         self.state.apply(data, NOW + 1)
-        row = next(text for text, _ in views_ui.screen_frame(self.state, NOW + 1, 30, 260)
+        row = next(text for text, _ in views_ui.screen_frame(self.state, NOW + 1, 30, 272)
                    if is_row(text, "IU1PZC"))
         self.assertIn(name, row)
-        self.assertLess(layout_ui.cell_width(row), 260)
+        self.assertLess(layout_ui.cell_width(row), 272)
         self.assertEqual([row[a:b] for a, b in row.highlights], ["14053.1"])
 
 

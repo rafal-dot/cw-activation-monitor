@@ -1,4 +1,4 @@
-"""Deterministic activation ordering using source timestamps and unrounded values."""
+"""Deterministic activation ordering using original RBN timestamps and unrounded values."""
 
 from __future__ import annotations
 
@@ -6,11 +6,11 @@ from dataclasses import dataclass
 import time
 
 from .geo import distance_km
-from .models import Entry, Match
+from .models import Entry, Match, last_rbn_time
 from .filtering import filter_reasons
 
 
-SORT_FIELDS = {"last": "Last activity", "first": "First seen", "db": "Signal (dB)",
+SORT_FIELDS = {"last": "Last RBN", "first": "First seen", "db": "Signal (dB)",
                "wpm": "WPM", "distance": "Distance", "frequency": "Frequency"}
 
 
@@ -56,8 +56,9 @@ def ordered_rows(rows: list[tuple[Entry, Match]], order: SortOrder,
         fresh = (prioritize_new and now < entry.new_until and entry.active_match(now) is not None
                  and not filter_reasons(match, minimum_snr, bands, spotters, maximum_snr, per_band))
         snr = max((r.snr for r in match.receptions), default=None)
+        last_rbn = last_rbn_time(match)
         if order.field == "last":
-            value = entry.spot_time
+            value = last_rbn
         elif order.field == "first":
             value = entry.created_at if entry.first_seen_known else None
         elif order.field == "db":
@@ -70,6 +71,7 @@ def ordered_rows(rows: list[tuple[Entry, Match]], order: SortOrder,
             value = distance_km(origin, match.location)
         return (not fresh, -entry.new_until if fresh else 0,
                 value is None, (-value if order.direction == "desc" else value) if value is not None else 0,
-                -entry.spot_time, snr is None, -snr if snr is not None else 0,
+                last_rbn is None, -last_rbn if last_rbn is not None else 0,
+                snr is None, -snr if snr is not None else 0,
                 -entry.rank, match.program, match.call, match.key[1], match.key[2])
     return sorted(rows, key=key)

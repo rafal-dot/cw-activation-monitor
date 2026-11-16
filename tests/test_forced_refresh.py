@@ -27,7 +27,7 @@ class ForcedRefreshTests(unittest.TestCase):
             current[0] = 1
             client.poll(1)
             self.assertEqual(sources.call_count, 1)
-            self.assertEqual(rbn.call_args.args[0], [])  # Ordinary reuse does not require another spot query.
+            self.assertEqual(rbn.call_args.args[0], ["SP5TEST"])  # The shared stream continues to refresh known stations.
             forced = client.poll(1, force=True)
             self.assertEqual(sources.call_count, 2)
             self.assertEqual(rbn.call_args.args[0], ["SP5TEST"])

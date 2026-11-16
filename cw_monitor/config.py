@@ -16,6 +16,7 @@ PROGRAMS = ("POTA", "SOTA", "WWFF")
 
 
 RBN_URL = "https://www.reversebeacon.net"
+RBN_STARTUP_HISTORY_SECONDS = 30 * 60
 
 
 USER_AGENT = "cw-hunter-python/0.3.0 (read-only activation/RBN monitor)"

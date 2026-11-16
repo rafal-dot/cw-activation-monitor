@@ -146,8 +146,8 @@ class RbnClientTests(unittest.TestCase):
         params = parse_qs(urlsplit(get.call_args.args[0]).query)
         self.assertEqual(params["cde"], ["SP5GQ,SQ5J"])
         self.assertNotIn("cdx", params)
-        self.assertEqual(params["r"], ["10"])
-        self.assertEqual(params["ma"], ["300"])
+        self.assertEqual(params["r"], ["100"])
+        self.assertEqual(params["ma"], ["1800"])
 
     def test_no_calls_means_no_network(self):
         with patch.object(http, "get_json") as get, patch.object(http, "get_text") as text:
@@ -192,11 +192,11 @@ class RbnClientTests(unittest.TestCase):
         with patch.object(http, "get_json", side_effect=get):
             first = client.fetch(["IU1PZC", "YO5BDL"], ["SP5GQ", "SQ5J"], 300)
             self.assertLessEqual(len(queries), 8)
-            self.assertTrue(any("budget" in w for w in client.warnings))
+            self.assertFalse(any("budget" in w for w in client.warnings))
             result = client.fetch(["IU1PZC", "YO5BDL"], ["SP5GQ", "SQ5J"], 300)
         self.assertEqual({(r.call, r.receiver) for r in result},
                          {(c, r) for c in ("IU1PZC", "YO5BDL") for r in ("SP5GQ", "SQ5J")})
-        self.assertEqual([int(q["r"][0]) for q in queries[:4]], [10, 20, 50, 100])
+        self.assertEqual(int(queries[0]["r"][0]), 100)
         self.assertLessEqual(len(queries), 16)
         self.assertTrue(first)
 

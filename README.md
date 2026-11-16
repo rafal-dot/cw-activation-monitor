@@ -80,7 +80,7 @@ of 60 seconds. Faster adaptive RBN reads reuse the program-source cache.
 | `--pota-max-age` | 300 seconds | Maximum age of a POTA program spot |
 | `--sota-max-age` | 600 seconds | Maximum age of a local SOTA program spot |
 | `--wwff-max-age` | 900 seconds | Maximum age of a WWFF program spot |
-| `--rbn-max-age` | 300 seconds | Maximum age of an initial RBN confirmation |
+| `--rbn-max-age` | 300 seconds | Fresh RBN limit; older startup matches are amber |
 | `--history-max-age` | 1800 seconds | Retention after program activity ends |
 | `--timeout` | 20 seconds | Timeout of each HTTPS request |
 | `--tolerance` | 0.5 kHz | Allowed initial POTA/WWFF/SOTA versus RBN offset |
@@ -96,21 +96,33 @@ updates the existing row. Activator callsigns retain portable prefixes/suffixes.
 
 A new activation needs a recent CW program spot and a matching RBN confirmation
 from at least one selected spotter on the same band, within the tolerance.
+Startup reads up to 100 CW reports, looking back 30 minutes (or the configured
+RBN freshness limit if longer). Older matches appear silently with no NEW/audio
+alert: their Last RBN clock is amber and details say RBN confirmation outdated.
 Unconfirmed activations are checked again in later cycles. Once confirmed, the
 original RBN reception is retained; program activity determines ACTIVE status.
+The shared feed continues for known active stations and updates their readings.
+The amber indication clears when any selected spotter has a newer report within
+`--rbn-max-age`. With colours disabled, the textual note remains visible.
 Repeated source data does not renew its timestamp. QRT, non-CW reports and
 source expiry affect activity, while HISTORY preserves earlier observations.
 Restored records await current source data before their activity is known.
 
-The default sort is latest activity first, with newly detected entries given
+The table shows **Last RBN** separately from **Last spot** (POTA/SOTA/WWFF).
+Last RBN is the age of the newest original RBN report among the selected
+spotters, never the time the data were downloaded. Re-fetching a report or
+receiving a new program spot does not reset this clock. Missing RBN timestamps
+(such as restored CSV readings) show `—` until a dated reception is available.
+
+The default sort is latest RBN reception first, with newly detected entries given
 priority in newest-first time sorts. Sorting changes each section independently.
-Supported criteria are last activity, first detection, dB, WPM, distance and
+Supported criteria are last RBN reception, first detection, dB, WPM, distance and
 frequency, with ascending/descending directions.
 
 ## RBN packet and traffic statistics
 
 The shared RBN stream is fetched for **1–5 selected spotters**. Its row limit
-adapts through 10, 20, 50 and 100. Busy streams can shorten the RBN interval
+starts at 100 for the historical snapshot, then adapts through 10, 20, 50 and 100. Busy streams can shorten the RBN interval
 from 60 to 30 and 15 seconds without increasing program-source polling.
 
 ```text
@@ -210,6 +222,12 @@ python3 cw_hunter.py --reference-name-length 24
 Names are otherwise shown in full when terminal space permits. Set the length
 to zero to hide names. `--park-name-length` remains a compatibility alias.
 
+Individual invalid records from POTA, WWFF, local SOTA feeds or RBN are skipped
+without a main-screen warning. Validation and incomplete-RBN coverage checks
+remain active. Counts are available with `--log-level debug` and an event log.
+An entirely unreadable feed, network/source failure, malformed user CSV or
+history write error remains visible.
+
 ## CSV logs and restoration
 
 ```bash
@@ -233,6 +251,10 @@ Personal CSV files, backups and Friends state are excluded by `.gitignore`;
 keep them when updating the source files.
 
 ## Friends
+
+Android calls this list **Callsign watchlist**, for friends and stations you
+want to hear. Its **Watchlist alerts** controls share one setting. Python keeps
+the existing `--friends-*` options and the compatible `friends.csv` format.
 
 Create a UTF-8 CSV, or export one from the Android application, using this header:
 

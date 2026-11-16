@@ -9,11 +9,9 @@ from threading import Event, Thread
 import time
 
 from .friends import FriendIndex
-from .config import MAX_RESPONSE_BYTES, POTA_URL, WWFF_URL
+from .config import MAX_RESPONSE_BYTES, POTA_URL, WWFF_URL, RBN_STARTUP_HISTORY_SECONDS
 from .models import ActivationSpot, Match, RbnSpot, Snapshot, SourceError
 from .restore import startup_entries
-from .snr import resolve_snr
-from .values import band_for
 from .sources import http
 from .sources.programs import read_pota, read_program
 from .sources.rbn import RbnClient
@@ -121,8 +119,6 @@ class Poller:
             self.source_spots[program] = selected
             spots.extend(selected)
             inactive.update(stopped)
-            if skipped:
-                warnings.append(f"{program}: skipped {skipped} invalid entries")
         return spots, failed, warnings, errors, inactive
 
     def fetch(self, refresh_sources: bool = True, force: bool = False) -> Snapshot:
@@ -154,7 +150,8 @@ class Poller:
         friends = args.friends if args.friends_alerts else ()
         friend_index = FriendIndex(friends)
         friend_calls = {friend.call for friend in friends}
-        pending = [p for key, p in latest.items() if force or key not in self.confirmed or any(value is not None for value in resolve_snr(args.min_snr, args.max_snr, args.band_snr, band_for(p.frequency))) or args.filter_spotters is not None]
+        # Cached confirmations do not stop the shared feed: known stations need fresh RBN clocks too.
+        pending = list(latest.values())
         received = []
         try:
             if time.monotonic() < (self.server_retry_at if force else self.retry_at).get("RBN", 0):
@@ -176,7 +173,7 @@ class Poller:
         for p in pending:
             same_call = by_call.get(p.call, [])
             hits = [r for r in same_call if r.receiver in args.spotters
-                    and r.time is not None and 0 <= now - r.time <= args.rbn_max_age
+                    and r.time is not None and 0 <= now - r.time <= max(args.rbn_max_age, RBN_STARTUP_HISTORY_SECONDS)
                     and station_band(r.call, r.frequency) == station_band(p.call, p.frequency)
                     and abs(r.frequency - p.frequency) <= args.tolerance + 1e-9]
             if hits:

@@ -117,8 +117,8 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(table_ui.row_values(*active[0], NOW + 301, history=True)[10], "ACTIVE")
         self.assertEqual([len(r) for r in self.state.rows(NOW + 541)], [0, 1])
 
-    def test_first_confirmation_still_requires_fresh_rbn(self):
-        self.assertEqual(self.state.apply(snapshot(rbn_age=301), NOW), [])
+    def test_first_confirmation_rejects_reports_older_than_startup_history(self):
+        self.assertEqual(self.state.apply(snapshot(rbn_age=1801), NOW), [])
         self.assertEqual(self.state.rows(NOW), ([], []))
 
     def test_park_change_on_same_band_creates_separate_entry(self):
@@ -365,6 +365,25 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(values["First seen"], "00:01:15")
         self.assertEqual(values["Last spot"], "00:01:45")
         self.assertEqual(values["RBN age"], "00:01:25")
+        self.assertEqual(values["Last RBN"], "00:01:25")
+
+    def test_last_rbn_age_uses_latest_original_report_and_unknown_time_has_no_source_fallback(self):
+        self.state.apply(snapshot(pota_age=1, rbn_age=50), NOW)
+        entry, match = self.state.rows(NOW)[0][0]
+        reception = match.receptions[0]
+        mixed = replace(match, receptions=[replace(reception, time=None), reception,
+            replace(reception, receiver="SQ5J", time=NOW - 12)])
+        values = dict(zip(table_ui.HEADERS, table_ui.row_values(entry, mixed, NOW + 3)))
+        self.assertEqual(values["Last RBN"], "00:00:15")
+        self.assertEqual(values["Last spot"], "00:00:04")
+        unknown = replace(match, receptions=[replace(reception, time=None)])
+        self.assertEqual(table_ui.row_values(entry, unknown, NOW)[17], "—")
+        self.assertEqual(table_ui.row_values(entry, replace(match, receptions=[]), NOW)[17], "—")
+        # A fresh program spot does not change the original RBN timestamp.
+        self.state.apply(models.Snapshot([replace(snapshot().spots[0], time=NOW + 20)], [], [], NOW + 20), NOW + 20)
+        values = dict(zip(table_ui.HEADERS, table_ui.row_values(*self.state.rows(NOW + 25)[0][0], NOW + 25)))
+        self.assertEqual(values["Last RBN"], "00:01:15")
+        self.assertEqual(values["Last spot"], "00:00:05")
 
     def test_old_active_pota_update_changes_only_latest_pota_age(self):
         self.state.apply(snapshot(), NOW)
@@ -378,6 +397,7 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(values["First seen"], "00:05:20")
         self.assertEqual(values["Last spot"], "00:00:15")
         self.assertEqual(values["RBN age"], "00:05:30")
+        self.assertEqual(values["Last RBN"], "00:05:30")
         self.assertEqual(values["Spot kHz"], "14053.1")
 
     def test_return_after_hidden_history_keeps_first_detection_time(self):
@@ -396,7 +416,8 @@ class MonitorTests(unittest.TestCase):
                       views_ui.render(self.state, NOW + 75).splitlines()):
             header = next(text for text in lines if text.startswith("Program"))
             row = next(text for text in lines if is_row(text, "IU1PZC"))
-            self.assertLess(header.index("First seen"), header.index("Last spot"))
+            self.assertLess(header.index("First seen"), header.index("Last RBN"))
+            self.assertLess(header.index("Last RBN"), header.index("Last spot"))
             self.assertLess(header.index("Last spot"), header.index("RBN age"))
             self.assertLess(header.index("RBN age"), header.index("Comment"))
             for expected in ("00:01:15", "00:01:45", "00:01:25"):
@@ -407,7 +428,7 @@ class MonitorTests(unittest.TestCase):
         for width in (40, 80, 120):
             lines = [text for text, _ in views_ui.screen_frame(self.state, NOW + 75, 24, width, layout=self.layout)]
             header = next(text for text in lines if "Spot kHz" in text)
-            for label, expected in (("First seen", "00:01:15"), ("Last spot", "00:01:45")):
+            for label, expected in (("First seen", "00:01:15"), ("Last RBN", "00:01:25"), ("Last spot", "00:01:45")):
                 if label not in header:
                     self.assertTrue(any(f"{label}: {expected}" in text for text in lines))
             for text in lines[4:-4]:
@@ -707,19 +728,19 @@ class AdaptiveScheduleTests(unittest.TestCase):
             self.poll(when)
         self.assertEqual(len(self.poller.confirmed), 2)
         self.assertEqual(self.source.call_count, 2)
-        self.assertEqual(self.poller.rbn.poll_interval, 60)
+        self.assertEqual(self.poller.rbn.poll_interval, 15)
         self.assertEqual(self.poller.next_poll_at(45, 46), 60)
 
 
 class PollerTests(unittest.TestCase):
-    def test_confirmed_unchanged_spot_is_not_requested_again(self):
+    def test_confirmed_unchanged_spot_stays_in_shared_stream(self):
         poller = polling.Poller(cli.arguments(["--programs", "POTA"]))
         with patch.object(time, "time", return_value=NOW), \
              patch.object(http, "get_json", return_value=[pota()]), \
              patch.object(poller.rbn, "fetch", side_effect=[[rbn()], []]) as fetch:
             first, second = poller.fetch(), poller.fetch()
         self.assertEqual(fetch.call_args_list[0].args[0], ["IU1PZC"])
-        self.assertEqual(fetch.call_args_list[1].args[0], [])
+        self.assertEqual(fetch.call_args_list[1].args[0], ["IU1PZC"])
         self.assertEqual(first.rbn, second.rbn)
         self.assertEqual(second.rbn[0].time, NOW - 42)
 
@@ -731,17 +752,17 @@ class PollerTests(unittest.TestCase):
             poller.fetch()
             poller.fetch()
             again = poller.fetch()
-        self.assertEqual(fetch.call_args_list[2].args[0], [])
+        self.assertEqual(fetch.call_args_list[2].args[0], ["IU1PZC"])
         self.assertEqual(again.rbn, [rbn()])
 
-    def test_park_name_update_does_not_require_another_rbn_query(self):
+    def test_park_name_update_keeps_confirmation_while_shared_stream_continues(self):
         poller = polling.Poller(cli.arguments(["--programs", "POTA"]))
         with patch.object(time, "time", return_value=NOW), \
              patch.object(http, "get_json", side_effect=[[pota(name="Old name")], [pota(name="New name")]]), \
              patch.object(poller.rbn, "fetch", side_effect=[[rbn()], []]) as fetch:
             poller.fetch()
             updated = poller.fetch()
-        self.assertEqual(fetch.call_args_list[1].args[0], [])
+        self.assertEqual(fetch.call_args_list[1].args[0], ["IU1PZC"])
         self.assertEqual(updated.spots[0].name, "New name")
 
     def test_unconfirmed_spot_is_checked_again(self):
@@ -753,7 +774,7 @@ class PollerTests(unittest.TestCase):
             poller.fetch()
         self.assertEqual([call.args[0] for call in fetch.call_args_list], [["IU1PZC"], ["IU1PZC"]])
 
-    def test_same_band_time_or_frequency_update_does_not_repeat_rbn_query(self):
+    def test_same_band_updates_reuse_confirmation_while_shared_stream_continues(self):
         for updated in (pota(age=5), pota(frequency="14054")):
             poller = polling.Poller(cli.arguments(["--programs", "POTA"]))
             with self.subTest(updated=updated), patch.object(time, "time", return_value=NOW), \
@@ -761,7 +782,7 @@ class PollerTests(unittest.TestCase):
                  patch.object(poller.rbn, "fetch", side_effect=[[rbn()], []]) as fetch:
                 poller.fetch()
                 poller.fetch()
-            self.assertEqual(fetch.call_args_list[1].args[0], [])
+            self.assertEqual(fetch.call_args_list[1].args[0], ["IU1PZC"])
 
     def test_new_band_requires_separate_rbn_check(self):
         poller = polling.Poller(cli.arguments(["--programs", "POTA"]))
@@ -782,7 +803,7 @@ class PollerTests(unittest.TestCase):
             state.apply(poller.fetch(), NOW)
             with patch.object(time, "time", return_value=NOW + 60):
                 state.apply(poller.fetch(), NOW + 60)
-        self.assertEqual(fetch.call_args_list[1].args[0], [])
+        self.assertEqual(fetch.call_args_list[1].args[0], ["IU1PZC"])
         self.assertEqual([len(r) for r in state.rows(NOW + 60)], [1, 0])
         self.assertEqual(state.rows(NOW + 60)[0][0][0].last_heard, NOW - 299)
         self.assertEqual([len(r) for r in state.rows(NOW + 971)], [0, 1])

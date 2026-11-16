@@ -3,19 +3,19 @@
 from __future__ import annotations
 
 from ..geo import azimuth_text, distance_text
-from ..models import ChangedField, Entry, Match, latest_reception, update_description
+from ..models import ChangedField, Entry, Match, last_rbn_time, latest_reception, update_description
 from ..values import age_text, band_for, clean
 from ..filtering import filter_reasons
 
 
 HEADERS = ["", "Activator", "Reference", "Spot kHz", "Spotters", "SNR dB", "WPM", "RBN age", "RBN kHz", "Band", "Status", "Comment",
-           "First seen", "Last spot", "Distance", "Program", "Azimuth"]
+           "First seen", "Last spot", "Distance", "Program", "Azimuth", "Last RBN"]
 
 
-TABLE_FIELDS = (15, 1, 9, 3, 8, 5, 6, 2, 4, 12, 13, 7, 14, 16, 11)
+TABLE_FIELDS = (15, 1, 9, 3, 8, 5, 6, 2, 4, 12, 17, 13, 7, 14, 16, 11)
 
 
-NUMERIC_FIELDS = frozenset((3, 5, 6, 7, 8, 12, 13, 14, 16))
+NUMERIC_FIELDS = frozenset((3, 5, 6, 7, 8, 12, 13, 14, 16, 17))
 FREQUENCY_COLUMNS = {3: ChangedField.SPOT_FREQUENCY, 8: ChangedField.RBN_FREQUENCY}
 
 
@@ -75,6 +75,7 @@ def row_values(entry: Entry, match: Match, now: float, history: bool = False,
     if description:
         comment += " | " + description
     reception = latest_reception(match)
+    last_rbn = last_rbn_time(match)
     rbn_frequency = (f"{reception.frequency:.1f}" if reception else "—")
     if match.receptions and all(r.time is None for r in match.receptions):
         rbn_frequency = " / ".join(dict.fromkeys(f"{r.frequency:.1f}" for r in match.receptions))
@@ -88,4 +89,5 @@ def row_values(entry: Entry, match: Match, now: float, history: bool = False,
             band_for(match.frequency), status, comment,
             age_text(now - entry.created_at) if entry.first_seen_known else "—", age_text(now - entry.spot_time),
             distance_text(qth, match.location, distance_unit), match.program,
-            azimuth_text(qth, match.location)]
+            azimuth_text(qth, match.location),
+            age_text(now - last_rbn) if last_rbn is not None else "—"]

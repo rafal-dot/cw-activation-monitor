@@ -20,9 +20,11 @@ def colors_enabled(mode: str, stream=None) -> bool:
 
 
 def value_spans(field: int, text: str, snr_limits: tuple[int, int],
-                wpm_limits: tuple[int, int]) -> list[tuple[int, int, str]]:
+                wpm_limits: tuple[int, int], rbn_outdated: bool = False) -> list[tuple[int, int, str]]:
     """Colour each receiver's value independently, preserving receiver order."""
     kind = COLOR_FIELDS.get(field)
+    if field == 17 and rbn_outdated and text.strip() != "—":
+        return [(len(text) - len(text.lstrip()), len(text.rstrip()), "yellow")]
     if kind == "program":
         token = text.strip()
         if token in PROGRAM_COLORS:
@@ -39,6 +41,12 @@ def value_spans(field: int, text: str, snr_limits: tuple[int, int],
             color = "green" if value <= wpm_limits[0] else "yellow" if value <= wpm_limits[1] else "red"
         spans.append((token.start(), token.end(), color))
     return spans
+
+
+def rbn_age_spans(text: str, outdated: bool) -> list[tuple[int, int, str]]:
+    """Keep only the latest RBN clock amber when it moves to a detail line."""
+    match = re.search(r"Last RBN:\s*(\d+:\d{2}:\d{2})", text) if outdated else None
+    return [(match.start(1), match.end(1), "yellow")] if match else []
 
 
 def measurement_spans(text: str, snr_limits: tuple[int, int],

@@ -114,7 +114,7 @@ class Entry:
 
     @property
     def last_heard(self) -> float | None:
-        return max((r.time for r in self.match.receptions if r.time is not None), default=None)
+        return last_rbn_time(self.match)
 
     def active_match(self, now: float) -> Match | None:
         references = tuple(p for p in self.match.references if now <= self.spot_deadlines[p])
@@ -131,6 +131,16 @@ class Entry:
 
 def latest_reception(match: Match) -> RbnSpot | None:
     return max(match.receptions, key=lambda r: r.time if r.time is not None else -math.inf, default=None)
+
+
+def last_rbn_time(match: Match) -> float | None:
+    """Original RBN report time; matches contain only the monitored spotters."""
+    return max((r.time for r in match.receptions if r.time is not None), default=None)
+
+
+def rbn_confirmation_outdated(match: Match, now: float, max_age: float) -> bool:
+    last = last_rbn_time(match)
+    return last is not None and now - last > max_age
 
 
 def update_description(entry: Entry, match: Match, now: float) -> str:

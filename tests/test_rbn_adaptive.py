@@ -86,16 +86,29 @@ class AdaptiveFetchTests(unittest.TestCase):
     def stream(self, receivers=("SP5GQ",)):
         return self.client.streams[(tuple(sorted(receivers)), 300)]
 
-    def test_initial_fetch_expands_to_cover_full_freshness_window(self):
+    def test_initial_fetch_uses_one_full_packet_to_cover_startup_history(self):
         for i in range(25):
             self.feed.add(i, NOW - i * 10)
         rows = self.fetch()
         self.assertEqual(len(rows), 25)
-        self.assertEqual([int(q["r"][0]) for q in self.feed.queries], [10, 20, 50])
+        self.assertEqual([int(q["r"][0]) for q in self.feed.queries], [100])
         self.assertTrue(all("cdx" not in q for q in self.feed.queries))
         self.assertEqual(self.stream().watermark, NOW)
         self.assertEqual(len(self.stream().spots), 25)
         self.assertAlmostEqual(self.stream().load.average, 5)
+
+    def test_startup_history_uses_100_once_then_live_window_and_slow_shrink(self):
+        self.feed.add("old", NOW - 19 * 60)
+        self.feed.add("too-old", NOW - 1801)
+        rows = self.fetch()
+        self.assertEqual([row.time for row in rows], [NOW - 19 * 60])
+        self.assertEqual(self.feed.queries[0]["ma"], ["1800"])
+        for _ in range(9):
+            self.feed.now += 60
+            self.assertEqual(self.fetch(), [])
+        self.assertEqual([int(q["r"][0]) for q in self.feed.queries], [100, 100, 100, 50, 50, 50, 20, 20, 20, 10])
+        self.assertTrue(all(q["ma"] == ["300"] for q in self.feed.queries[1:]))
+        self.assertEqual(self.client.warnings, [])
 
     def test_fewer_than_limit_is_complete_even_when_all_rows_are_recent(self):
         self.feed.add("one", NOW - 1)
@@ -132,7 +145,7 @@ class AdaptiveFetchTests(unittest.TestCase):
             self.feed.add(f"new{i}", NOW + 2 + i)
         # The full ten-row answer includes an old sentinel, covering the window.
         self.fetch()
-        self.assertEqual([int(q["r"][0]) for q in self.feed.queries], [10, 10])
+        self.assertEqual([int(q["r"][0]) for q in self.feed.queries], [100, 100])
         self.assertEqual(self.stream().watermark, NOW + 60)
 
     def test_overflow_does_not_advance_watermark_or_train_on_partial_count(self):
@@ -372,7 +385,7 @@ class AdaptiveFetchTests(unittest.TestCase):
         self.feed.add("two", self.feed.now - 1, receiver="SQ5J")
         self.fetch(receivers=["SQ5J"])
         self.assertEqual(len(self.client.streams), 2)
-        self.assertEqual(self.stream(("SQ5J",)).load.limit, 10)
+        self.assertEqual(self.stream(("SQ5J",)).load.limit, 100)
 
 
 if __name__ == "__main__":

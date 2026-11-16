@@ -6,8 +6,8 @@ import argparse
 from dataclasses import replace
 import time
 
-from .config import PROGRAMS
-from .models import ActivationSpot, ChangedField, Entry, Match, Snapshot, latest_reception, update_description
+from .config import PROGRAMS, RBN_STARTUP_HISTORY_SECONDS
+from .models import ActivationSpot, ChangedField, Entry, Match, Snapshot, latest_reception, rbn_confirmation_outdated, update_description
 from .rbn_status import RbnStatus
 from .restore import startup_entries
 from .sources.programs import join_spots
@@ -121,7 +121,7 @@ class Monitor:
             if ((key in current and p.time > current[key].time) or p.program in snapshot.failed_programs) and 0 <= now - p.time <= max_spot_age(args, p.program):
                 current[key] = p
         fresh = {m.key: m for m in join_spots(list(current.values()), snapshot.rbn, args.spotters, now,
-                                             {p: max_spot_age(args, p) for p in PROGRAMS}, args.rbn_max_age, args.tolerance)}
+                                             {p: max_spot_age(args, p) for p in PROGRAMS}, max(args.rbn_max_age, RBN_STARTUP_HISTORY_SECONDS), args.tolerance)}
         new = []
         for key, latest in sorted(current.items(), key=lambda item: (item[1].time, item[0])):
             entry = self.entries.get(key)
@@ -152,14 +152,15 @@ class Monitor:
                 previous_bands = tuple(sorted(bands)) if key[1] not in bands else ()
                 bands.add(key[1])
                 qualifies = self.snr_filter.accepts(match)
-                entry = Entry(match, deadlines, self.rank, now + 60 if qualifies else 0,
-                              now + args.highlight_seconds if qualifies else 0, alerted=qualifies,
+                announce = qualifies and not rbn_confirmation_outdated(match, now, args.rbn_max_age)
+                entry = Entry(match, deadlines, self.rank, now + 60 if announce else 0,
+                              now + args.highlight_seconds if announce else 0, alerted=qualifies,
                               created_at=now, spot_time=latest.time,
                               previous_bands=previous_bands)
                 self.entries[key] = entry
                 self.log_entry("BAND" if entry.previous_bands else "NEW", entry, now,
                                "previous bands: " + "/".join(entry.previous_bands) if entry.previous_bands else "")
-                if qualifies:
+                if announce:
                     new.append(match)
             else:
                 old_match, old_time = entry.match, entry.spot_time
@@ -200,7 +201,8 @@ class Monitor:
         self.refresh_lifecycle(now)
         for entry in self.entries.values():
             if (not entry.alerted and entry.active_match(now) is not None
-                    and self.snr_filter.accepts(entry.match)):
+                    and self.snr_filter.accepts(entry.match)
+                    and not rbn_confirmation_outdated(entry.match, now, args.rbn_max_age)):
                 entry.alerted = True
                 entry.new_until, entry.flash_until = now + 60, now + args.highlight_seconds
                 self.log_entry("ALERT", entry, now, "first qualifying filters")

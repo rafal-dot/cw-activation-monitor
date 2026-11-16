@@ -10,7 +10,7 @@ from threading import Event
 import time
 from urllib.parse import urlencode
 
-from ..config import CALL_PATTERN, RBN_URL, RBN_HIGH_TRAFFIC_WARNING
+from ..config import CALL_PATTERN, RBN_URL, RBN_HIGH_TRAFFIC_WARNING, RBN_STARTUP_HISTORY_SECONDS
 from ..friends import FriendIndex
 from ..models import RbnSpot, SourceError
 from ..rbn_status import RbnBatch, RbnMode, RbnStatus, RbnTraffic
@@ -23,8 +23,10 @@ class RbnLoad:
 
     levels = (10, 20, 50, 100)
 
-    def __init__(self):
-        self.limit = 10
+    def __init__(self, initial_limit: int = 10):
+        if initial_limit not in self.levels:
+            raise ValueError("Invalid RBN row limit")
+        self.limit = initial_limit
         self.average: float | None = None
         self.peaks: deque[float] = deque(maxlen=10)
         self.quiet = 0
@@ -66,7 +68,7 @@ class RbnLoad:
 
 @dataclass
 class RbnStream:
-    load: RbnLoad = field(default_factory=RbnLoad)
+    load: RbnLoad = field(default_factory=lambda: RbnLoad(100))
     traffic: RbnTraffic = field(default_factory=RbnTraffic)
     traffic_read_at: float | None = None
     batch: RbnBatch | None = None
@@ -190,8 +192,6 @@ class RbnClient:
                                                   integer_reading(item["db"], -100, 100), integer_reading(item["wpm"], 0, 200))
                 except (KeyError, TypeError, ValueError, OverflowError):
                     skipped += 1
-            if skipped:
-                self.warnings.append(f"RBN: skipped {skipped} invalid spots")
             if raw and skipped == len(raw):
                 raise SourceError("RBN: could not parse any spots")
             self.request_log.append(f"{'stream' if calls is None else 'batches'} "
@@ -243,6 +243,7 @@ class RbnClient:
         if ((stream.watermark is not None and stream.watermark > started)
                 or (stream.covered_until is not None and stream.covered_until > started)):
             stream = self.streams[key] = RbnStream(interval=self.base_interval)
+        query_age = max(max_age, RBN_STARTUP_HISTORY_SECONDS) if stream.batch is None else max_age
         overlap = 15.0
         target = max(started - max_age, stream.watermark - overlap) if stream.watermark is not None else started - max_age
         window = max(1.0, started - target)
@@ -253,10 +254,10 @@ class RbnClient:
         was_at_minimum = stream.interval <= min(15, self.base_interval)
         limit = stream.load.start(window)
         while True:
-            rows, count, skipped = self._request(None, receivers, max_age, limit)
+            rows, count, skipped = self._request(None, receivers, query_age, limit)
             now = time.time()
             stream.spots.update(rows)
-            stream.spots = {i: s for i, s in stream.spots.items() if 0 <= now - s.time <= max_age}
+            stream.spots = {i: s for i, s in stream.spots.items() if 0 <= now - s.time <= query_age}
             oldest = min((s.time for s in rows.values()), default=started)
             complete = not skipped and (count < limit or oldest < target)
             if complete or limit == 100:
@@ -267,7 +268,7 @@ class RbnClient:
         # Consecutive capped reads can cover new arrivals even while an older
         # gap remains. Only overlapping time ranges establish continuous coverage.
         if not skipped:
-            covered_from = now - max_age if count < limit else oldest if rows else None
+            covered_from = now - query_age if count < limit else oldest if rows else None
             if covered_from is not None:
                 if (stream.covered_since is not None and stream.covered_until is not None
                         and covered_from <= stream.covered_until):
@@ -285,7 +286,8 @@ class RbnClient:
         traffic_complete = not skipped and (count < limit or oldest <= traffic_start)
         # Count new IDs before activator matching, including late arrivals. A live
         # interval can be complete while the older startup history is still filling.
-        stream.traffic.observe(sum(i not in seen_before for i in stream.spots), started - traffic_start, traffic_complete)
+        stream.traffic.observe(sum(i not in seen_before and spot.time >= started - max_age for i, spot in stream.spots.items()),
+                               started - traffic_start, traffic_complete)
         stream.traffic_read_at = started
         valid = {key: spot for key, spot in rows.items() if 0 <= now - spot.time <= max_age}
         newest = max((spot.time for spot in valid.values()), default=oldest)
@@ -321,7 +323,7 @@ class RbnClient:
                 stream.batch_cursor = (first + offset * 20 + 1) % len(ordered)
                 stream.spots.update(self._query(groups[offset], receivers, max_age))
         now = time.time()
-        stream.spots = {i: s for i, s in stream.spots.items() if 0 <= now - s.time <= max_age}
+        stream.spots = {i: s for i, s in stream.spots.items() if 0 <= now - s.time <= query_age}
         if stream.traffic_gap_until > now and not self.small_batches.is_set():
             self.warnings.append(RBN_HIGH_TRAFFIC_WARNING)
         mode = RbnMode.BATCHES if self.small_batches.is_set() else RbnMode.STREAM

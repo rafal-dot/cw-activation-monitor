@@ -73,7 +73,7 @@ def arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--distance-unit", choices=("km", "mi"), default="km",
                         help="distance units (default: km)")
     parser.add_argument("--sort", choices=tuple(SORT_FIELDS),
-                        help="sort ACTIVE/HISTORY independently; default: saved choice or last activity")
+                        help="sort ACTIVE/HISTORY independently; default: saved choice or latest RBN report")
     parser.add_argument("--sort-order", choices=("asc", "desc"),
                         help="sort direction; default with --sort: desc for times, asc for numbers; choice is saved")
     parser.add_argument("--min-snr", type=minimum_snr, default=argparse.SUPPRESS, metavar="DB|off",
@@ -100,7 +100,7 @@ def arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--sota-max-age", type=float, default=600, help="maximum SOTA spot age in seconds (600)")
     parser.add_argument("--wwff-max-age", type=float, default=900, help="maximum WWFF spot age in seconds (900)")
     parser.add_argument("--rbn-max-age", type=float, default=300,
-                        help="maximum age of the initial RBN confirmation in seconds")
+                        help="fresh RBN age in seconds; older startup confirmations are amber")
     parser.add_argument("--history-max-age", type=float, default=1800,
                         help="history retention after program spot activity ends, in seconds (1800)")
     parser.add_argument("--new-max-age", type=float, default=300,

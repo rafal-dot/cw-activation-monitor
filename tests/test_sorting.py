@@ -18,7 +18,7 @@ from test_pota_alert import NOW
 
 
 def row(call, last, first, snrs, wpms, longitude=None, rank=1):
-    receptions = [models.RbnSpot(call, f"RX{i}", 14044.0, NOW, snr, wpm)
+    receptions = [models.RbnSpot(call, f"RX{i}", 14044.0, last, snr, wpm)
                   for i, (snr, wpm) in enumerate(zip(snrs, wpms))]
     match = models.Match(call, ("GB-0001",), 14044.0, receptions,
                          location=(0, longitude) if longitude is not None else None)
@@ -36,7 +36,7 @@ class SortingTests(unittest.TestCase):
     def calls(self, order, rows=None, origin=(0, 0)):
         return [m.call for _, m in ordered_rows(self.rows if rows is None else rows, order, origin, NOW)]
 
-    def test_all_fields_and_directions_use_source_first_seen_and_maximum_spotter_values(self):
+    def test_all_fields_and_directions_use_rbn_first_seen_and_maximum_spotter_values(self):
         expected = {"last": ["C", "B", "A"], "first": ["C", "A", "B"],
                     "db": ["A", "C", "B"], "wpm": ["A", "C", "B"], "distance": ["A", "B", "C"]}
         for field, ascending in expected.items():
@@ -51,7 +51,7 @@ class SortingTests(unittest.TestCase):
         b = row("B", NOW, NOW, [20], [20], rank=2)
         c = row("C", NOW, NOW, [20], [20], rank=3)
         self.assertEqual(self.calls(SortOrder(), [a, b, c]), ["C", "B", "A"])
-        # New RBN timestamps do not pretend to be newer source activity.
+        # A new RBN timestamp changes last-reception ordering independently of the program report.
         self.a[1].receptions[0] = replace(self.a[1].receptions[0], time=NOW + 100)
         self.assertEqual(self.calls(SortOrder()), ["A", "B", "C"])
 
@@ -125,7 +125,7 @@ class SortingTests(unittest.TestCase):
             return models.RbnSpot(call, "SP5GQ", 14044.0, when, 20, 20)
         state.apply(models.Snapshot([spot("OLD", NOW - 120)], [heard("OLD", NOW - 120)], [], NOW - 120), NOW - 120)
         found = state.apply(models.Snapshot([spot("OLD", NOW), spot("NEW", NOW - 100)],
-                                            [heard("OLD", NOW), heard("NEW", NOW)], [], NOW), NOW)
+                                            [heard("OLD", NOW), heard("NEW", NOW - 50)], [], NOW), NOW)
         self.assertEqual([m.call for m in found], ["NEW"])
         def calls(when): return [m.call for _, m in state.rows(when)[0]]
         self.assertEqual(calls(NOW), ["NEW", "OLD"])
@@ -137,6 +137,21 @@ class SortingTests(unittest.TestCase):
         self.assertEqual(entries["OLD"].created_at, NOW - 120)
         self.assertEqual(entries["OLD"].spot_time, NOW)
         self.assertEqual(entries["NEW"].spot_time, NOW - 100)
+
+    def test_last_uses_latest_rbn_report_instead_of_program_or_fetch_time_and_unknown_sorts_last(self):
+        old = row("OLD", NOW, NOW - 100, [20], [20])
+        old[1].receptions[0] = replace(old[1].receptions[0], time=NOW - 90)
+        heard = row("HEARD", NOW - 200, NOW - 100, [20, 20], [20, 20])
+        heard[1].receptions = [replace(r, time=NOW - age) for r, age in zip(heard[1].receptions, (120, 3))]
+        unknown = row("UNKNOWN", NOW, NOW - 100, [30], [20])
+        unknown[1].receptions[0] = replace(unknown[1].receptions[0], time=None)
+        rows = [old, unknown, heard]
+        self.assertEqual(self.calls(SortOrder(), rows), ["HEARD", "OLD", "UNKNOWN"])
+        self.assertEqual(self.calls(SortOrder("last", "asc"), rows), ["OLD", "HEARD", "UNKNOWN"])
+        self.assertEqual([m.call for _, m in ordered_rows(rows, SortOrder(), None, NOW + 100)],
+                         ["HEARD", "OLD", "UNKNOWN"])
+        heard[0].spot_time = NOW
+        self.assertEqual(self.calls(SortOrder(), rows), ["HEARD", "OLD", "UNKNOWN"])
 
     def test_frequency_sort_uses_unrounded_source_frequency_in_both_directions_without_new_priority(self):
         rows = [row("HIGH", NOW, NOW, [30], [20]), row("LOW", NOW, NOW, [20], [20]),

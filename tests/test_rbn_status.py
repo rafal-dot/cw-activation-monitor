@@ -64,12 +64,12 @@ class TelemetryTests(unittest.TestCase):
         self.feed.rows["7"] = raw_rbn(mode=2, age=7)
         self.assertEqual(len(self.fetch()), 5)
         status = self.client.status
-        self.assertEqual(status.batch, RbnBatch(8, 10))
+        self.assertEqual(status.batch, RbnBatch(8, 100))
         self.assertEqual(status.last, RbnTrafficSample(7, 300))
         self.assertEqual(status.average_per_minute, 1.4)
         self.assertEqual(status.spotters, ("SP5GQ",))
         self.assertEqual(status.interval, 60)
-        self.assertEqual(self.client.streams[(("SP5GQ",), 300)].load.limit, 20)
+        self.assertEqual(self.client.streams[(("SP5GQ",), 300)].load.limit, 100)
         self.assertEqual(len(self.feed.queries), 1)
 
     def test_repeated_pages_do_not_count_spots_again_and_late_arrivals_are_counted(self):
@@ -141,7 +141,7 @@ class TelemetryTests(unittest.TestCase):
         state = monitor.Monitor(args)
         state.apply(snapshot, NOW)
         self.assertEqual(state.rbn_status, self.client.status)
-        self.assertIn("RBN: 1/10 rows · every 60s", views.render(state, NOW))
+        self.assertIn("RBN: 1/100 rows · every 60s", views.render(state, NOW))
         state.apply(models.Snapshot([], [], [], NOW), NOW)
         self.assertEqual(state.rbn_status, snapshot.rbn_status)
 

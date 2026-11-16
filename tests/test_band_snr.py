@@ -162,7 +162,7 @@ class BandSnrTests(unittest.TestCase):
         self.assertEqual(len(tracker.observe([replace(r, time=NOW + 3) for r in match(3530, 8).receptions], NOW + 3, args)), 1)
         self.assertEqual(tracker.observe([replace(r, time=NOW + 4) for r in match(7032, 8).receptions], NOW + 4, args), [])
 
-    def test_only_effectively_filtered_bands_recheck_rbn(self):
+    def test_all_active_bands_stay_in_shared_stream_regardless_of_snr_filters(self):
         args = cli.arguments(["--programs", "POTA", "--min-snr", "10", "--band-snr", "20m:off:off"])
         client = polling.Poller(args)
         spots = [models.ActivationSpot(call, "PL-0001", freq, NOW) for call, freq in (("TWENTY", 14044), ("FORTY", 7032))]
@@ -171,7 +171,7 @@ class BandSnrTests(unittest.TestCase):
         with patch.object(client, "read_source", return_value=(spots, 0, set())), patch.object(time, "time", return_value=NOW), \
              patch.object(client.rbn, "fetch", return_value=[]) as query:
             client.fetch()
-        self.assertEqual(query.call_args.args[0], ["FORTY"])
+        self.assertEqual(query.call_args.args[0], ["FORTY", "TWENTY"])
         self.assertEqual(client.confirmed[spots[0].key][0].time, NOW)
 
     def test_curses_band_editor_keeps_drafts_validates_and_fits_small_terminals(self):
