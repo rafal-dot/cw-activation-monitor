@@ -94,7 +94,7 @@ def links_for(match: Match, args: argparse.Namespace, history: bool = False) -> 
         elif match.program == "SOTA":
             url = f"https://www.sota.org.uk/Summit/{quote(reference, safe='/')}"
         else:
-            url = "https://spots.wwff.co/search?" + urlencode({"q": reference})
+            url = "https://spots.wwff.co/references/direct?" + urlencode({"wwff": reference})
         links.append(f"  {reference} {match.program}: {url}")
     return links
 

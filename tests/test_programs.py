@@ -117,6 +117,18 @@ class ProgramTests(unittest.TestCase):
         self.assertIsNone(state.entries[p.key].active_match(NOW + 10))
         self.assertIsNotNone(state.entries[w.key].active_match(NOW + 10))
 
+    def test_wwff_links_open_the_selected_reference_in_active_and_history(self):
+        args = cli.arguments([])
+        match = models.Match("MM/LY3X/P", ("GMFF-0112", "GMFF-0001"), 14062.0,
+                             [rbn(call="MM/LY3X/P", freq=14062.0)], program="WWFF")
+        expected = [f"  {ref} WWFF: https://spots.wwff.co/references/direct?wwff={ref}"
+                    for ref in match.references]
+        for history in (False, True):
+            with self.subTest(history=history):
+                links = views_ui.links_for(match, args, history)
+                self.assertEqual(links[1:], expected)
+                self.assertIn("reversebeacon.net/main.php?", links[0])
+
     def test_program_is_first_column_and_links_are_program_specific(self):
         state = monitoring.Monitor(cli.arguments([]))
         spots = [models.ActivationSpot("IU1PZC", "IT-0001", 14052.9, NOW, program=p) for p in config.PROGRAMS]
